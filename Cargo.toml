@@ -53,6 +53,15 @@ thiserror = "2"
 # Time
 chrono = { version = "0.4", features = ["serde"] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", features = ["apple-native"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
+
 [dev-dependencies]
 wiremock = "0.6"
 assert_cmd = "2"

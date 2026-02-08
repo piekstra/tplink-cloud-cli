@@ -249,6 +249,50 @@ impl TPLinkApi {
         let error_code = response.error_code;
         if error_code == 0 {
             let result = response.result.unwrap_or_default();
+
+            // The V2 API can return error_code 0 at the outer level but
+            // include an inner errorCode in the result object (as string or int).
+            let inner_error = result
+                .get("errorCode")
+                .and_then(|v| {
+                    v.as_i64()
+                        .map(|n| n as i32)
+                        .or_else(|| v.as_str().and_then(|s| s.parse::<i32>().ok()))
+                })
+                .unwrap_or(0);
+
+            if inner_error != 0 {
+                let inner_msg = result
+                    .get("errorMsg")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Login failed")
+                    .to_string();
+
+                if inner_error == ERR_MFA_REQUIRED {
+                    return Err(AppError::MfaRequired {
+                        mfa_type: result
+                            .get("mfaType")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string()),
+                        email: Some(username.to_string()),
+                    });
+                }
+
+                if inner_error == ERR_WRONG_CREDENTIALS
+                    || inner_error == ERR_ACCOUNT_LOCKED
+                {
+                    return Err(AppError::Auth {
+                        message: inner_msg,
+                        error_code: Some(inner_error),
+                    });
+                }
+
+                return Err(AppError::Api {
+                    message: inner_msg,
+                    error_code: Some(inner_error),
+                });
+            }
+
             return Ok(LoginResult {
                 token: result["token"].as_str().unwrap_or_default().to_string(),
                 refresh_token: result["refreshToken"].as_str().map(|s| s.to_string()),
