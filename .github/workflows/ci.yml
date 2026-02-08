@@ -1,11 +1,8 @@
-name: CI
+name: PR Check
 
 on:
-  push:
-    branches: [main]
-    paths-ignore: ["**/*.md", LICENSE]
   pull_request:
-    paths-ignore: ["**/*.md", LICENSE]
+    branches: [main]
 
 jobs:
   check:

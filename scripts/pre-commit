@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Pre-commit hook: runs cargo fmt and clippy on staged Rust files.
+# Install: ln -sf ../../scripts/pre-commit .git/hooks/pre-commit
+
+set -e
+
+# Only check if Rust files are staged
+if ! git diff --cached --name-only --diff-filter=ACMR | grep -q '\.rs$'; then
+    exit 0
+fi
+
+echo "pre-commit: cargo fmt --check"
+cargo fmt --check 2>&1
+if [ $? -ne 0 ]; then
+    echo "error: cargo fmt check failed. Run 'cargo fmt' and re-stage."
+    exit 1
+fi
+
+echo "pre-commit: cargo clippy"
+cargo clippy -- -D warnings 2>&1
+if [ $? -ne 0 ]; then
+    echo "error: clippy found warnings. Fix them and re-stage."
+    exit 1
+fi

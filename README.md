@@ -4,6 +4,12 @@ A cross-platform CLI for controlling TP-Link Kasa and Tapo smart home devices vi
 
 ## Installation
 
+### Homebrew (macOS / Linux)
+
+```bash
+brew install piekstra/tap/tplc
+```
+
 ### Pre-built binaries
 
 Download the latest release for your platform from [GitHub Releases](https://github.com/piekstra/tplink-cloud-cli/releases).

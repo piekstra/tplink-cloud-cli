@@ -1,14 +1,29 @@
-name: Release
+name: Test & Release
 
 on:
   push:
-    tags: ["v*"]
+    branches: [main]
 
 permissions:
   contents: write
 
 jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+      - run: cargo fmt --check
+      - run: cargo clippy -- -D warnings
+      - run: cargo test --verbose
+
   build:
+    needs: check
     strategy:
       matrix:
         include:
@@ -63,14 +78,106 @@ jobs:
 
   release:
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
       - uses: actions/download-artifact@v4
         with:
           merge-multiple: true
 
+      - name: Determine version
+        id: bump
+        run: |
+          BASE_VERSION=$(cat version.txt | tr -d '\n')
+          VERSION="${BASE_VERSION}.${GITHUB_RUN_NUMBER}"
+          ./scripts/bump-version.sh "$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
       - name: Create release
-        uses: softprops/action-gh-release@v2
-        with:
-          generate_release_notes: true
-          files: tplc-*
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git tag "v${{ steps.bump.outputs.version }}"
+          git push origin "v${{ steps.bump.outputs.version }}"
+          gh release create "v${{ steps.bump.outputs.version }}" \
+            tplc-* \
+            --title "v${{ steps.bump.outputs.version }}" \
+            --generate-notes
+
+      - name: Update Homebrew formula
+        env:
+          GH_TOKEN: ${{ secrets.TAP_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "TAP_TOKEN secret not set, skipping Homebrew update"
+            exit 0
+          fi
+
+          SHA256_MACOS_ARM=$(shasum -a 256 tplc-macos-aarch64 | awk '{print $1}')
+          SHA256_MACOS_X86=$(shasum -a 256 tplc-macos-x86_64 | awk '{print $1}')
+          SHA256_LINUX_X86=$(shasum -a 256 tplc-linux-x86_64 | awk '{print $1}')
+          SHA256_LINUX_ARM=$(shasum -a 256 tplc-linux-aarch64 | awk '{print $1}')
+          VERSION="${{ steps.bump.outputs.version }}"
+          BASE_URL="https://github.com/piekstra/tplink-cloud-cli/releases/download/v${VERSION}"
+
+          cat > /tmp/tplc.rb <<RUBY
+          class Tplc < Formula
+            desc "CLI for TP-Link Cloud API - control Kasa and Tapo smart home devices"
+            homepage "https://github.com/piekstra/tplink-cloud-cli"
+            license "GPL-3.0"
+            version "${VERSION}"
+
+            on_macos do
+              if Hardware::CPU.arm?
+                url "${BASE_URL}/tplc-macos-aarch64"
+                sha256 "${SHA256_MACOS_ARM}"
+              else
+                url "${BASE_URL}/tplc-macos-x86_64"
+                sha256 "${SHA256_MACOS_X86}"
+              end
+            end
+
+            on_linux do
+              if Hardware::CPU.arm?
+                url "${BASE_URL}/tplc-linux-aarch64"
+                sha256 "${SHA256_LINUX_ARM}"
+              else
+                url "${BASE_URL}/tplc-linux-x86_64"
+                sha256 "${SHA256_LINUX_X86}"
+              end
+            end
+
+            def install
+              binary = Dir["tplc-*"].first || "tplc"
+              mv binary, "tplc"
+              bin.install "tplc"
+            end
+
+            test do
+              assert_match version.to_s, shell_output("#{bin}/tplc --version")
+            end
+          end
+          RUBY
+
+          # Strip leading whitespace from heredoc
+          sed -i '' 's/^          //' /tmp/tplc.rb
+
+          CONTENT=$(base64 -i /tmp/tplc.rb)
+          EXISTING_SHA=$(gh api repos/piekstra/homebrew-tap/contents/Formula/tplc.rb --jq '.sha' 2>/dev/null || echo "")
+
+          if [ -n "$EXISTING_SHA" ]; then
+            gh api repos/piekstra/homebrew-tap/contents/Formula/tplc.rb \
+              -X PUT \
+              -f message="Update tplc to v${VERSION}" \
+              -f content="${CONTENT}" \
+              -f sha="${EXISTING_SHA}"
+          else
+            gh api repos/piekstra/homebrew-tap/contents/Formula/tplc.rb \
+              -X PUT \
+              -f message="Add tplc v${VERSION}" \
+              -f content="${CONTENT}"
+          fi

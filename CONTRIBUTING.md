@@ -10,12 +10,17 @@ Thanks for your interest in contributing! This document outlines how to get star
    cd tplink-cloud-cli
    ```
 
-2. Build:
+2. Install git hooks (runs `cargo fmt --check` and `cargo clippy` before each commit):
+   ```bash
+   git config core.hooksPath scripts
+   ```
+
+3. Build:
    ```bash
    cargo build
    ```
 
-3. Run checks:
+4. Run checks:
    ```bash
    cargo fmt --check
    cargo clippy -- -D warnings
