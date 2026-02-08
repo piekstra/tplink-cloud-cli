@@ -93,7 +93,17 @@ Device name supports exact match, case-insensitive match, or partial match.
 
 ### Energy monitoring (HS110, KP115, KP125, P110, HS300 outlets only)
 `tplc energy realtime "<device>"`
-Returns voltage_mv, current_ma, power_mw, total_wh.
+Returns instant readings: voltage_mv, current_ma, power_mw, total_wh.
+- `total_wh` is cumulative since the device counter was last reset (not time-bounded). Use daily/monthly for time-series data.
+
+`tplc energy daily "<device>" [--year Y --month M]`
+Returns per-day Wh totals for the given month (defaults to current month).
+
+`tplc energy monthly "<device>" [--year Y]`
+Returns per-month Wh totals for the given year (defaults to current year).
+
+`tplc energy summary`
+Lists all emeter-capable devices (does not fetch readings).
 
 ### Light control (KL430, KL420L5, L530 only)
 `tplc light brightness "<device>" <0-100>`
@@ -142,6 +152,9 @@ tplc schedule add "Porch Light" --action on --sunset --days mon,tue,wed,thu,fri,
 - Use `--verbose` / `-v` flag when debugging API issues (logs HTTP requests to stderr).
 - Use `--table` / `-t` flag when showing results to humans.
 - The `tplc devices list` output includes a `cloud` field ("kasa" or "tapo") for each device.
+- Multi-outlet strips (HS300, KP303, KP400) expose each outlet as a separate device with its own alias. The parent strip also appears as a device — controlling it affects all outlets.
+- Energy values from `realtime` are instantaneous: voltage/current/power are right now, `total_wh` is cumulative since last counter reset. For historical data, use `daily` or `monthly`.
+- Login requires `tplc login` interactively (or via `TPLC_USERNAME`/`TPLC_PASSWORD` env vars). Tokens persist in OS keychain — login is a one-time setup, not per-session.
 
 ## Reference
 
