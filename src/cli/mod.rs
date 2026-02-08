@@ -13,7 +13,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 #[command(
     name = "tplc",
     version,
-    about = "TP-Link Cloud CLI - control Kasa smart home devices"
+    about = "TP-Link Cloud CLI - control Kasa and Tapo smart home devices"
 )]
 pub struct Cli {
     #[command(subcommand)]

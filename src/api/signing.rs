@@ -5,11 +5,9 @@ use md5::{Digest, Md5};
 use sha1::Sha1;
 use uuid::Uuid;
 
-/// App-level keys from Kasa Android APK (identify the app, not the user).
-const ACCESS_KEY: &str = "e37525375f8845999bcc56d5e6faa76d";
-const SECRET_KEY: &str = "314bc6700b3140ca80bc655e527cb062";
+use super::cloud_type::CloudType;
 
-/// The Kasa app uses a hardcoded timestamp for signing.
+/// The TP-Link app uses a hardcoded timestamp for signing.
 const SIGNING_TIMESTAMP: &str = "9999999999";
 
 type HmacSha1 = Hmac<Sha1>;
@@ -29,7 +27,11 @@ pub fn compute_content_md5(body: &str) -> String {
 /// Compute HMAC-SHA1 signature for a V2 API request.
 ///
 /// Returns (content_md5, x_authorization_header).
-pub fn compute_signature(body_json: &str, url_path: &str) -> (String, String) {
+pub fn compute_signature(
+    body_json: &str,
+    url_path: &str,
+    cloud_type: CloudType,
+) -> (String, String) {
     let content_md5 = compute_content_md5(body_json);
     let nonce = Uuid::new_v4().to_string();
 
@@ -38,22 +40,29 @@ pub fn compute_signature(body_json: &str, url_path: &str) -> (String, String) {
         content_md5, SIGNING_TIMESTAMP, nonce, url_path
     );
 
-    let mut mac =
-        HmacSha1::new_from_slice(SECRET_KEY.as_bytes()).expect("HMAC accepts any key length");
+    let mut mac = HmacSha1::new_from_slice(cloud_type.secret_key().as_bytes())
+        .expect("HMAC accepts any key length");
     mac.update(sig_string.as_bytes());
     let signature = hex::encode(mac.finalize().into_bytes());
 
     let authorization = format!(
         "Timestamp={}, Nonce={}, AccessKey={}, Signature={}",
-        SIGNING_TIMESTAMP, nonce, ACCESS_KEY, signature
+        SIGNING_TIMESTAMP,
+        nonce,
+        cloud_type.access_key(),
+        signature
     );
 
     (content_md5, authorization)
 }
 
 /// Get the headers required for a signed V2 API request.
-pub fn get_signing_headers(body_json: &str, url_path: &str) -> SigningHeaders {
-    let (content_md5, x_authorization) = compute_signature(body_json, url_path);
+pub fn get_signing_headers(
+    body_json: &str,
+    url_path: &str,
+    cloud_type: CloudType,
+) -> SigningHeaders {
+    let (content_md5, x_authorization) = compute_signature(body_json, url_path, cloud_type);
     SigningHeaders {
         content_md5,
         x_authorization,
@@ -68,19 +77,17 @@ mod tests {
     fn test_compute_content_md5() {
         let body = r#"{"appType":"Kasa_Android_Mix","cloudUserName":"test@example.com"}"#;
         let md5 = compute_content_md5(body);
-        // MD5 should be a base64-encoded string
         assert!(!md5.is_empty());
-        // Base64 should decode back to 16 bytes (MD5 digest size)
         let decoded = STANDARD.decode(&md5).unwrap();
         assert_eq!(decoded.len(), 16);
     }
 
     #[test]
-    fn test_compute_signature_produces_valid_format() {
+    fn test_compute_signature_kasa() {
         let body = r#"{"test":"data"}"#;
         let url_path = "/api/v2/account/login";
 
-        let (content_md5, authorization) = compute_signature(body, url_path);
+        let (content_md5, authorization) = compute_signature(body, url_path, CloudType::Kasa);
 
         assert!(!content_md5.is_empty());
         assert!(authorization.starts_with("Timestamp=9999999999, Nonce="));
@@ -89,11 +96,36 @@ mod tests {
     }
 
     #[test]
+    fn test_compute_signature_tapo() {
+        let body = r#"{"test":"data"}"#;
+        let url_path = "/api/v2/account/login";
+
+        let (content_md5, authorization) = compute_signature(body, url_path, CloudType::Tapo);
+
+        assert!(!content_md5.is_empty());
+        assert!(authorization.starts_with("Timestamp=9999999999, Nonce="));
+        assert!(authorization.contains("AccessKey=4d11b6b9d5ea4d19a829adbb9714b057"));
+        assert!(authorization.contains("Signature="));
+    }
+
+    #[test]
+    fn test_different_clouds_different_signatures() {
+        let body = r#"{"test":"data"}"#;
+        let url_path = "/api/v2/account/login";
+
+        let (_, auth_kasa) = compute_signature(body, url_path, CloudType::Kasa);
+        let (_, auth_tapo) = compute_signature(body, url_path, CloudType::Tapo);
+
+        // Different secret keys produce different signatures
+        assert_ne!(auth_kasa, auth_tapo);
+    }
+
+    #[test]
     fn test_get_signing_headers() {
         let body = r#"{"test":"data"}"#;
         let url_path = "/";
 
-        let headers = get_signing_headers(body, url_path);
+        let headers = get_signing_headers(body, url_path, CloudType::Kasa);
 
         assert!(!headers.content_md5.is_empty());
         assert!(headers.x_authorization.contains("Timestamp="));

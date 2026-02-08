@@ -42,6 +42,18 @@ pub fn store_tokens(tokens: &TokenSet) -> Result<(), AppError> {
     set_value("username", &tokens.username)?;
     set_value("regional_url", &tokens.regional_url)?;
     set_value("term_id", &tokens.term_id)?;
+
+    // Tapo tokens
+    if let Some(ref tt) = tokens.tapo_token {
+        set_value("tapo_token", tt)?;
+    }
+    if let Some(ref trt) = tokens.tapo_refresh_token {
+        set_value("tapo_refresh_token", trt)?;
+    }
+    if let Some(ref tru) = tokens.tapo_regional_url {
+        set_value("tapo_regional_url", tru)?;
+    }
+
     Ok(())
 }
 
@@ -54,6 +66,9 @@ pub fn get_tokens() -> Result<Option<TokenSet>, AppError> {
     let regional_url = get_value("regional_url")?.unwrap_or_default();
     let term_id = get_value("term_id")?.unwrap_or_default();
     let refresh_token = get_value("refresh_token")?;
+    let tapo_token = get_value("tapo_token")?;
+    let tapo_refresh_token = get_value("tapo_refresh_token")?;
+    let tapo_regional_url = get_value("tapo_regional_url")?;
 
     Ok(Some(TokenSet {
         token,
@@ -61,6 +76,9 @@ pub fn get_tokens() -> Result<Option<TokenSet>, AppError> {
         username,
         regional_url,
         term_id,
+        tapo_token,
+        tapo_refresh_token,
+        tapo_regional_url,
     }))
 }
 
@@ -70,5 +88,8 @@ pub fn clear_tokens() -> Result<(), AppError> {
     delete_value("username")?;
     delete_value("regional_url")?;
     delete_value("term_id")?;
+    delete_value("tapo_token")?;
+    delete_value("tapo_refresh_token")?;
+    delete_value("tapo_regional_url")?;
     Ok(())
 }

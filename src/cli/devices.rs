@@ -34,6 +34,8 @@ struct DeviceRow {
     model: String,
     #[tabled(rename = "TYPE")]
     category: String,
+    #[tabled(rename = "CLOUD")]
+    cloud: String,
     #[tabled(rename = "STATUS")]
     status: String,
     #[tabled(rename = "EMETER")]
@@ -65,6 +67,10 @@ async fn handle_list(config: &RuntimeConfig) -> Result<(), AppError> {
                     name,
                     model: info.model().to_string(),
                     category: dtype.category().to_string(),
+                    cloud: info
+                        .cloud_type
+                        .map(|c| c.display_name().to_string())
+                        .unwrap_or_else(|| "kasa".to_string()),
                     status: if info.status == Some(1) {
                         "online"
                     } else {
@@ -87,6 +93,7 @@ async fn handle_list(config: &RuntimeConfig) -> Result<(), AppError> {
                     "model": info.model(),
                     "device_type": format!("{:?}", dtype),
                     "category": dtype.category(),
+                    "cloud": info.cloud_type.map(|c| c.display_name()).unwrap_or("kasa"),
                     "device_id": info.id(),
                     "status": if info.status == Some(1) { "online" } else { "offline" },
                     "energy_monitoring": dtype.has_emeter(),
@@ -109,6 +116,7 @@ async fn handle_get(device_name: &str, config: &RuntimeConfig) -> Result<(), App
         "model": device.info.model(),
         "device_type": format!("{:?}", device.device_type),
         "category": device.device_type.category(),
+        "cloud": device.info.cloud_type.map(|c| c.display_name()).unwrap_or("kasa"),
         "device_id": &device.device_id,
         "is_child": device.child_id.is_some(),
     });
@@ -146,6 +154,10 @@ async fn handle_search(query: &str, config: &RuntimeConfig) -> Result<(), AppErr
                     name,
                     model: info.model().to_string(),
                     category: dtype.category().to_string(),
+                    cloud: info
+                        .cloud_type
+                        .map(|c| c.display_name().to_string())
+                        .unwrap_or_else(|| "kasa".to_string()),
                     status: if info.status == Some(1) {
                         "online"
                     } else {
@@ -167,6 +179,7 @@ async fn handle_search(query: &str, config: &RuntimeConfig) -> Result<(), AppErr
                     "alias": name,
                     "model": info.model(),
                     "device_type": format!("{:?}", dtype),
+                    "cloud": info.cloud_type.map(|c| c.display_name()).unwrap_or("kasa"),
                     "device_id": info.id(),
                     "status": if info.status == Some(1) { "online" } else { "offline" },
                 })

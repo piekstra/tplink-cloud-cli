@@ -1,6 +1,7 @@
 use std::env;
 
 use crate::api::client::TPLinkApi;
+use crate::api::cloud_type::CloudType;
 use crate::auth::keychain;
 use crate::auth::token::TokenSet;
 use crate::error::AppError;
@@ -11,6 +12,9 @@ pub struct AuthContext {
     pub regional_url: String,
     pub term_id: String,
     pub username: String,
+    pub tapo_token: Option<String>,
+    pub tapo_refresh_token: Option<String>,
+    pub tapo_regional_url: Option<String>,
 }
 
 impl AuthContext {
@@ -21,7 +25,14 @@ impl AuthContext {
             username: self.username.clone(),
             regional_url: self.regional_url.clone(),
             term_id: self.term_id.clone(),
+            tapo_token: self.tapo_token.clone(),
+            tapo_refresh_token: self.tapo_refresh_token.clone(),
+            tapo_regional_url: self.tapo_regional_url.clone(),
         }
+    }
+
+    pub fn has_tapo(&self) -> bool {
+        self.tapo_token.as_ref().is_some_and(|t| !t.is_empty())
     }
 }
 
@@ -39,10 +50,13 @@ pub async fn get_auth_context(_verbose: bool) -> Result<AuthContext, AppError> {
         regional_url: tokens.regional_url,
         term_id: tokens.term_id,
         username: tokens.username,
+        tapo_token: tokens.tapo_token,
+        tapo_refresh_token: tokens.tapo_refresh_token,
+        tapo_regional_url: tokens.tapo_regional_url,
     })
 }
 
-/// Attempt to refresh the token and update keychain.
+/// Attempt to refresh the Kasa token and update keychain.
 pub async fn refresh_auth(auth: &mut AuthContext, verbose: bool) -> Result<(), AppError> {
     let refresh_token = auth
         .refresh_token
@@ -53,6 +67,7 @@ pub async fn refresh_auth(auth: &mut AuthContext, verbose: bool) -> Result<(), A
         Some(auth.regional_url.clone()),
         verbose,
         Some(auth.term_id.clone()),
+        CloudType::Kasa,
     )?;
 
     let result = api.refresh_token(refresh_token).await?;
@@ -60,6 +75,36 @@ pub async fn refresh_auth(auth: &mut AuthContext, verbose: bool) -> Result<(), A
     auth.token = result.token;
     auth.refresh_token = result.refresh_token;
     auth.regional_url = result.regional_url;
+
+    keychain::store_tokens(&auth.to_token_set())?;
+
+    Ok(())
+}
+
+/// Attempt to refresh the Tapo token and update keychain.
+pub async fn refresh_tapo_auth(auth: &mut AuthContext, verbose: bool) -> Result<(), AppError> {
+    let refresh_token = auth
+        .tapo_refresh_token
+        .as_deref()
+        .ok_or(AppError::NotAuthenticated)?;
+
+    let regional_url = auth
+        .tapo_regional_url
+        .as_deref()
+        .ok_or(AppError::NotAuthenticated)?;
+
+    let api = TPLinkApi::new(
+        Some(regional_url.to_string()),
+        verbose,
+        Some(auth.term_id.clone()),
+        CloudType::Tapo,
+    )?;
+
+    let result = api.refresh_token(refresh_token).await?;
+
+    auth.tapo_token = Some(result.token);
+    auth.tapo_refresh_token = result.refresh_token;
+    auth.tapo_regional_url = Some(result.regional_url);
 
     keychain::store_tokens(&auth.to_token_set())?;
 

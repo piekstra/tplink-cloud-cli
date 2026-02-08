@@ -4,12 +4,11 @@ use reqwest::Certificate;
 use serde_json::json;
 use uuid::Uuid;
 
+use super::cloud_type::CloudType;
 use super::errors::*;
 use super::response::ApiResponse;
 use super::signing::get_signing_headers;
 use crate::error::AppError;
-
-const V2_HOST: &str = "https://n-wap.tplinkcloud.com";
 
 const PATH_ACCOUNT_STATUS: &str = "/api/v2/account/getAccountStatusAndUrl";
 const PATH_LOGIN: &str = "/api/v2/account/login";
@@ -28,6 +27,7 @@ pub struct TPLinkApi {
     client: reqwest::Client,
     pub host: String,
     term_id: String,
+    cloud_type: CloudType,
     query_params: HashMap<String, String>,
     verbose: bool,
 }
@@ -41,10 +41,10 @@ fn build_http_client() -> Result<reqwest::Client, AppError> {
         .build()?)
 }
 
-fn default_query_params(term_id: &str) -> HashMap<String, String> {
+fn build_query_params(cloud_type: CloudType, term_id: &str) -> HashMap<String, String> {
     let mut params = HashMap::new();
-    params.insert("appName".into(), "Kasa_Android_Mix".into());
-    params.insert("appVer".into(), "3.4.451".into());
+    params.insert("appName".into(), cloud_type.app_type().into());
+    params.insert("appVer".into(), cloud_type.app_version().into());
     params.insert("netType".into(), "wifi".into());
     params.insert("termID".into(), term_id.into());
     params.insert("ospf".into(), "Android 14".into());
@@ -61,15 +61,17 @@ impl TPLinkApi {
         host: Option<String>,
         verbose: bool,
         term_id: Option<String>,
+        cloud_type: CloudType,
     ) -> Result<Self, AppError> {
         let term_id = term_id.unwrap_or_else(|| Uuid::new_v4().to_string());
-        let query_params = default_query_params(&term_id);
+        let query_params = build_query_params(cloud_type, &term_id);
         let client = build_http_client()?;
 
         Ok(Self {
             client,
-            host: host.unwrap_or_else(|| V2_HOST.to_string()),
+            host: host.unwrap_or_else(|| cloud_type.host().to_string()),
             term_id,
+            cloud_type,
             query_params,
             verbose,
         })
@@ -77,6 +79,10 @@ impl TPLinkApi {
 
     pub fn term_id(&self) -> &str {
         &self.term_id
+    }
+
+    pub fn cloud_type(&self) -> CloudType {
+        self.cloud_type
     }
 
     /// Make a signed V2 API request.
@@ -95,10 +101,10 @@ impl TPLinkApi {
             params.insert("token".into(), token.into());
         }
 
-        let signing = get_signing_headers(&body_json, url_path);
+        let signing = get_signing_headers(&body_json, url_path, self.cloud_type);
 
         if self.verbose {
-            eprintln!("POST {}", url);
+            eprintln!("[{}] POST {}", self.cloud_type, url);
             eprintln!("Body: {}", body_json);
         }
 
@@ -136,7 +142,7 @@ impl TPLinkApi {
     }
 
     /// Make a V1-style request (method/params wrapper) with V2 signing.
-    /// Used for device list and device passthrough operations.
+    /// Used for Kasa device list and device passthrough operations.
     async fn request_post_v1(
         &self,
         body: &serde_json::Value,
@@ -150,10 +156,10 @@ impl TPLinkApi {
             params.insert("token".into(), token.into());
         }
 
-        let signing = get_signing_headers(&body_json, url_path);
+        let signing = get_signing_headers(&body_json, url_path, self.cloud_type);
 
         if self.verbose {
-            eprintln!("POST {}/", self.host);
+            eprintln!("[{}] POST {}/", self.cloud_type, self.host);
             eprintln!("Body: {}", body_json);
         }
 
@@ -193,7 +199,7 @@ impl TPLinkApi {
     /// Discover the regional API server URL for the given account.
     async fn get_regional_url(&self, username: &str) -> Result<String, AppError> {
         let body = json!({
-            "appType": "Kasa_Android_Mix",
+            "appType": self.cloud_type.app_type(),
             "cloudUserName": username,
         });
         let response = self
@@ -224,8 +230,8 @@ impl TPLinkApi {
 
         // Step 2: Login
         let login_body = json!({
-            "appType": "Kasa_Android_Mix",
-            "appVersion": "3.4.451",
+            "appType": self.cloud_type.app_type(),
+            "appVersion": self.cloud_type.app_version(),
             "cloudPassword": password,
             "cloudUserName": username,
             "platform": "Android",
@@ -288,7 +294,7 @@ impl TPLinkApi {
         mfa_code: &str,
     ) -> Result<LoginResult, AppError> {
         let body = json!({
-            "appType": "Kasa_Android_Mix",
+            "appType": self.cloud_type.app_type(),
             "cloudPassword": password,
             "cloudUserName": username,
             "code": mfa_code,
@@ -319,7 +325,7 @@ impl TPLinkApi {
     /// Refresh an expired auth token using a refresh token.
     pub async fn refresh_token(&self, refresh_token: &str) -> Result<LoginResult, AppError> {
         let body = json!({
-            "appType": "Kasa_Android_Mix",
+            "appType": self.cloud_type.app_type(),
             "refreshToken": refresh_token,
             "terminalUUID": self.term_id,
         });

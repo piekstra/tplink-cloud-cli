@@ -2,6 +2,7 @@ use serde::Serialize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum DeviceType {
+    // Kasa devices
     HS100,
     HS103,
     HS105,
@@ -21,6 +22,10 @@ pub enum DeviceType {
     KL430,
     EP40,
     EP40Child,
+    // Tapo devices
+    P100,
+    P110,
+    L530,
     Unknown,
 }
 
@@ -40,6 +45,9 @@ const MODEL_MAP: &[(&str, DeviceType)] = &[
     ("KP303", DeviceType::KP303),
     ("KP400", DeviceType::KP400),
     ("EP40", DeviceType::EP40),
+    ("P100", DeviceType::P100),
+    ("P110", DeviceType::P110),
+    ("L530", DeviceType::L530),
 ];
 
 impl DeviceType {
@@ -77,12 +85,19 @@ impl DeviceType {
     pub fn has_emeter(&self) -> bool {
         matches!(
             self,
-            DeviceType::HS110 | DeviceType::KP115 | DeviceType::KP125 | DeviceType::HS300Child
+            DeviceType::HS110
+                | DeviceType::KP115
+                | DeviceType::KP125
+                | DeviceType::HS300Child
+                | DeviceType::P110
         )
     }
 
     pub fn is_light(&self) -> bool {
-        matches!(self, DeviceType::KL420L5 | DeviceType::KL430)
+        matches!(
+            self,
+            DeviceType::KL420L5 | DeviceType::KL430 | DeviceType::L530
+        )
     }
 
     pub fn is_child(&self) -> bool {
@@ -94,6 +109,10 @@ impl DeviceType {
                 | DeviceType::KP400Child
                 | DeviceType::EP40Child
         )
+    }
+
+    pub fn is_tapo(&self) -> bool {
+        matches!(self, DeviceType::P100 | DeviceType::P110 | DeviceType::L530)
     }
 
     pub fn category(&self) -> &'static str {
@@ -127,6 +146,9 @@ impl DeviceType {
             DeviceType::KL430 => "KL430",
             DeviceType::EP40 => "EP40",
             DeviceType::EP40Child => "EP40 Outlet",
+            DeviceType::P100 => "P100",
+            DeviceType::P110 => "P110",
+            DeviceType::L530 => "L530",
             DeviceType::Unknown => "Unknown",
         }
     }
@@ -146,11 +168,19 @@ mod tests {
     }
 
     #[test]
+    fn test_tapo_model_mapping() {
+        assert_eq!(DeviceType::from_model("P100"), DeviceType::P100);
+        assert_eq!(DeviceType::from_model("P110"), DeviceType::P110);
+        assert_eq!(DeviceType::from_model("L530"), DeviceType::L530);
+    }
+
+    #[test]
     fn test_has_children() {
         assert!(DeviceType::HS300.has_children());
         assert!(DeviceType::KP303.has_children());
         assert!(!DeviceType::HS100.has_children());
         assert!(!DeviceType::KL430.has_children());
+        assert!(!DeviceType::P100.has_children());
     }
 
     #[test]
@@ -158,14 +188,27 @@ mod tests {
         assert!(DeviceType::HS110.has_emeter());
         assert!(DeviceType::KP115.has_emeter());
         assert!(DeviceType::HS300Child.has_emeter());
+        assert!(DeviceType::P110.has_emeter());
         assert!(!DeviceType::HS100.has_emeter());
+        assert!(!DeviceType::P100.has_emeter());
     }
 
     #[test]
     fn test_is_light() {
         assert!(DeviceType::KL430.is_light());
         assert!(DeviceType::KL420L5.is_light());
+        assert!(DeviceType::L530.is_light());
         assert!(!DeviceType::HS100.is_light());
+        assert!(!DeviceType::P100.is_light());
+    }
+
+    #[test]
+    fn test_is_tapo() {
+        assert!(DeviceType::P100.is_tapo());
+        assert!(DeviceType::P110.is_tapo());
+        assert!(DeviceType::L530.is_tapo());
+        assert!(!DeviceType::HS100.is_tapo());
+        assert!(!DeviceType::KL430.is_tapo());
     }
 
     #[test]

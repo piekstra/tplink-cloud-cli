@@ -1,28 +1,100 @@
+use std::collections::HashSet;
+
 use crate::api::client::TPLinkApi;
+use crate::api::cloud_type::CloudType;
 use crate::api::device_client::DeviceClient;
-use crate::auth::credentials::{get_auth_context, refresh_auth, AuthContext};
+use crate::auth::credentials::{get_auth_context, refresh_auth, refresh_tapo_auth, AuthContext};
 use crate::error::AppError;
 use crate::models::device::Device;
 use crate::models::device_info::DeviceInfo;
 use crate::models::device_type::DeviceType;
 
-/// Fetch all devices (including children) and return them with their metadata.
+/// Fetch all devices (including children) from both Kasa and Tapo clouds.
+/// Deduplicates devices that appear in both clouds (Kasa takes priority).
 pub async fn fetch_all_devices(
     verbose: bool,
 ) -> Result<(Vec<(DeviceInfo, DeviceType, Option<String>)>, AuthContext), AppError> {
     let mut auth = get_auth_context(verbose).await?;
 
+    // Fetch Kasa devices
+    let kasa_devices = fetch_devices_for_cloud(&mut auth, CloudType::Kasa, verbose).await?;
+
+    // Track Kasa device IDs for deduplication
+    let kasa_ids: HashSet<String> = kasa_devices
+        .iter()
+        .map(|(info, _, _)| info.id().to_string())
+        .collect();
+
+    let mut devices = kasa_devices;
+
+    // Fetch Tapo devices (best-effort)
+    if auth.has_tapo() {
+        match fetch_devices_for_cloud(&mut auth, CloudType::Tapo, verbose).await {
+            Ok(tapo_devices) => {
+                for device in tapo_devices {
+                    // Deduplicate: skip if already in Kasa
+                    if !kasa_ids.contains(device.0.id()) {
+                        devices.push(device);
+                    }
+                }
+            }
+            Err(e) => {
+                if verbose {
+                    eprintln!("Tapo device fetch failed (non-fatal): {}", e);
+                }
+            }
+        }
+    }
+
+    Ok((devices, auth))
+}
+
+/// Fetch devices from a single cloud.
+async fn fetch_devices_for_cloud(
+    auth: &mut AuthContext,
+    cloud_type: CloudType,
+    verbose: bool,
+) -> Result<Vec<(DeviceInfo, DeviceType, Option<String>)>, AppError> {
+    let (token, regional_url) = match cloud_type {
+        CloudType::Kasa => (auth.token.clone(), auth.regional_url.clone()),
+        CloudType::Tapo => {
+            let token = auth
+                .tapo_token
+                .as_ref()
+                .ok_or(AppError::NotAuthenticated)?
+                .clone();
+            let url = auth
+                .tapo_regional_url
+                .as_ref()
+                .ok_or(AppError::NotAuthenticated)?
+                .clone();
+            (token, url)
+        }
+    };
+
     let api = TPLinkApi::new(
-        Some(auth.regional_url.clone()),
+        Some(regional_url),
         verbose,
         Some(auth.term_id.clone()),
+        cloud_type,
     )?;
 
-    let device_list = match api.get_device_info_list(&auth.token).await {
+    let device_list = match api.get_device_info_list(&token).await {
         Ok(list) => list,
         Err(AppError::TokenExpired { .. }) => {
-            refresh_auth(&mut auth, verbose).await?;
-            api.get_device_info_list(&auth.token).await?
+            match cloud_type {
+                CloudType::Kasa => refresh_auth(auth, verbose).await?,
+                CloudType::Tapo => refresh_tapo_auth(auth, verbose).await?,
+            }
+            let refreshed_token = match cloud_type {
+                CloudType::Kasa => auth.token.clone(),
+                CloudType::Tapo => auth
+                    .tapo_token
+                    .as_ref()
+                    .ok_or(AppError::NotAuthenticated)?
+                    .clone(),
+            };
+            api.get_device_info_list(&refreshed_token).await?
         }
         Err(e) => return Err(e),
     };
@@ -30,16 +102,17 @@ pub async fn fetch_all_devices(
     let mut devices = Vec::new();
 
     for device_json in &device_list {
-        if let Some(info) = DeviceInfo::from_json(device_json) {
+        if let Some(mut info) = DeviceInfo::from_json(device_json) {
+            info.cloud_type = Some(cloud_type);
             let dtype = DeviceType::from_model(info.model());
 
             if dtype.has_children() {
-                // Fetch children by getting sys_info
                 let client = DeviceClient::new(
-                    info.app_server_url.as_deref().unwrap_or(&auth.regional_url),
-                    &auth.token,
+                    info.app_server_url.as_deref().unwrap_or(&api.host),
+                    &token,
                     &auth.term_id,
                     verbose,
+                    cloud_type,
                 )?;
 
                 let parent_device =
@@ -51,7 +124,6 @@ pub async fn fetch_all_devices(
                 // Add children
                 if let Ok(children) = parent_device.get_children().await {
                     for child in children {
-                        // Use child alias if available
                         let child_alias = if child.alias.is_empty() {
                             None
                         } else {
@@ -66,67 +138,40 @@ pub async fn fetch_all_devices(
         }
     }
 
-    Ok((devices, auth))
+    Ok(devices)
 }
 
-/// Resolve a device by name or ID, with auto token refresh.
+/// Resolve a device by name or ID, searching both Kasa and Tapo clouds.
 pub async fn resolve_device(name_or_id: &str, verbose: bool) -> Result<Device, AppError> {
     let mut auth = get_auth_context(verbose).await?;
 
-    let api = TPLinkApi::new(
-        Some(auth.regional_url.clone()),
-        verbose,
-        Some(auth.term_id.clone()),
-    )?;
-
-    let device_list = match api.get_device_info_list(&auth.token).await {
-        Ok(list) => list,
-        Err(AppError::TokenExpired { .. }) => {
-            refresh_auth(&mut auth, verbose).await?;
-            api.get_device_info_list(&auth.token).await?
-        }
-        Err(e) => return Err(e),
-    };
-
-    // Build flat list of all devices including children
+    // Build flat list from both clouds
     let mut all_devices: Vec<(DeviceInfo, DeviceType, Option<String>, Option<String>)> = Vec::new();
+    let mut seen_ids: HashSet<String> = HashSet::new();
 
-    for device_json in &device_list {
-        if let Some(info) = DeviceInfo::from_json(device_json) {
-            let dtype = DeviceType::from_model(info.model());
+    // Kasa devices
+    collect_devices_for_resolution(
+        &mut auth,
+        CloudType::Kasa,
+        verbose,
+        &mut all_devices,
+        &mut seen_ids,
+    )
+    .await?;
 
-            if dtype.has_children() {
-                // Fetch children
-                let client = DeviceClient::new(
-                    info.app_server_url.as_deref().unwrap_or(&auth.regional_url),
-                    &auth.token,
-                    &auth.term_id,
-                    verbose,
-                )?;
-
-                let parent_device =
-                    Device::new(client, info.id().to_string(), info.clone(), dtype, None);
-
-                // Add parent (no child_id)
-                all_devices.push((info.clone(), dtype, None, None));
-
-                if let Ok(children) = parent_device.get_children().await {
-                    for child in children {
-                        let child_alias = if child.alias.is_empty() {
-                            None
-                        } else {
-                            Some(child.alias)
-                        };
-                        all_devices.push((
-                            info.clone(),
-                            dtype.child_type(),
-                            child_alias,
-                            Some(child.id),
-                        ));
-                    }
-                }
-            } else {
-                all_devices.push((info, dtype, None, None));
+    // Tapo devices (best-effort)
+    if auth.has_tapo() {
+        if let Err(e) = collect_devices_for_resolution(
+            &mut auth,
+            CloudType::Tapo,
+            verbose,
+            &mut all_devices,
+            &mut seen_ids,
+        )
+        .await
+        {
+            if verbose {
+                eprintln!("Tapo device fetch failed (non-fatal): {}", e);
             }
         }
     }
@@ -196,6 +241,107 @@ pub async fn resolve_device(name_or_id: &str, verbose: bool) -> Result<Device, A
     Err(AppError::DeviceNotFound(name_or_id.to_string()))
 }
 
+/// Collect devices from one cloud into the all_devices list for resolution.
+async fn collect_devices_for_resolution(
+    auth: &mut AuthContext,
+    cloud_type: CloudType,
+    verbose: bool,
+    all_devices: &mut Vec<(DeviceInfo, DeviceType, Option<String>, Option<String>)>,
+    seen_ids: &mut HashSet<String>,
+) -> Result<(), AppError> {
+    let (token, regional_url) = match cloud_type {
+        CloudType::Kasa => (auth.token.clone(), auth.regional_url.clone()),
+        CloudType::Tapo => {
+            let token = auth
+                .tapo_token
+                .as_ref()
+                .ok_or(AppError::NotAuthenticated)?
+                .clone();
+            let url = auth
+                .tapo_regional_url
+                .as_ref()
+                .ok_or(AppError::NotAuthenticated)?
+                .clone();
+            (token, url)
+        }
+    };
+
+    let api = TPLinkApi::new(
+        Some(regional_url),
+        verbose,
+        Some(auth.term_id.clone()),
+        cloud_type,
+    )?;
+
+    let device_list = match api.get_device_info_list(&token).await {
+        Ok(list) => list,
+        Err(AppError::TokenExpired { .. }) => {
+            match cloud_type {
+                CloudType::Kasa => refresh_auth(auth, verbose).await?,
+                CloudType::Tapo => refresh_tapo_auth(auth, verbose).await?,
+            }
+            let refreshed_token = match cloud_type {
+                CloudType::Kasa => auth.token.clone(),
+                CloudType::Tapo => auth
+                    .tapo_token
+                    .as_ref()
+                    .ok_or(AppError::NotAuthenticated)?
+                    .clone(),
+            };
+            api.get_device_info_list(&refreshed_token).await?
+        }
+        Err(e) => return Err(e),
+    };
+
+    for device_json in &device_list {
+        if let Some(mut info) = DeviceInfo::from_json(device_json) {
+            // Deduplicate: Kasa takes priority
+            if !seen_ids.insert(info.id().to_string()) {
+                continue;
+            }
+
+            info.cloud_type = Some(cloud_type);
+            let dtype = DeviceType::from_model(info.model());
+
+            if dtype.has_children() {
+                let client = DeviceClient::new(
+                    info.app_server_url.as_deref().unwrap_or(&api.host),
+                    &token,
+                    &auth.term_id,
+                    verbose,
+                    cloud_type,
+                )?;
+
+                let parent_device =
+                    Device::new(client, info.id().to_string(), info.clone(), dtype, None);
+
+                // Add parent (no child_id)
+                all_devices.push((info.clone(), dtype, None, None));
+
+                if let Ok(children) = parent_device.get_children().await {
+                    for child in children {
+                        let child_alias = if child.alias.is_empty() {
+                            None
+                        } else {
+                            Some(child.alias)
+                        };
+                        all_devices.push((
+                            info.clone(),
+                            dtype.child_type(),
+                            child_alias,
+                            Some(child.id),
+                        ));
+                    }
+                }
+            } else {
+                all_devices.push((info, dtype, None, None));
+            }
+        }
+    }
+
+    Ok(())
+}
+
 fn build_device(
     info: &DeviceInfo,
     dtype: DeviceType,
@@ -203,11 +349,31 @@ fn build_device(
     auth: &AuthContext,
     verbose: bool,
 ) -> Result<Device, AppError> {
+    let cloud_type = info.cloud_type.unwrap_or(CloudType::Kasa);
+
+    let (token, regional_url) = match cloud_type {
+        CloudType::Kasa => (auth.token.clone(), auth.regional_url.clone()),
+        CloudType::Tapo => {
+            let token = auth
+                .tapo_token
+                .as_ref()
+                .ok_or(AppError::NotAuthenticated)?
+                .clone();
+            let url = auth
+                .tapo_regional_url
+                .as_ref()
+                .ok_or(AppError::NotAuthenticated)?
+                .clone();
+            (token, url)
+        }
+    };
+
     let client = DeviceClient::new(
-        info.app_server_url.as_deref().unwrap_or(&auth.regional_url),
-        &auth.token,
+        info.app_server_url.as_deref().unwrap_or(&regional_url),
+        &token,
         &auth.term_id,
         verbose,
+        cloud_type,
     )?;
 
     Ok(Device::new(

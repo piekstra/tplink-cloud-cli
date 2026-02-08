@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::api::cloud_type::CloudType;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeviceInfo {
@@ -19,6 +21,10 @@ pub struct DeviceInfo {
     pub fw_id: Option<String>,
     pub is_same_region: Option<bool>,
     pub status: Option<i32>,
+
+    /// Which cloud this device was discovered from (not from API, set by CLI).
+    #[serde(skip_deserializing)]
+    pub cloud_type: Option<CloudType>,
 }
 
 impl DeviceInfo {

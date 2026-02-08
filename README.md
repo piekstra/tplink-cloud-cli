@@ -1,6 +1,6 @@
 # tplc - TP-Link Cloud CLI
 
-A cross-platform CLI for controlling TP-Link Kasa smart home devices via the cloud API. Built in Rust for speed and portability.
+A cross-platform CLI for controlling TP-Link Kasa and Tapo smart home devices via the cloud API. Built in Rust for speed and portability.
 
 ## Installation
 
@@ -42,10 +42,10 @@ tplc status             # Check authentication status
 ```
 
 Credentials can also be provided via environment variables:
-- `TPLC_USERNAME` - TP-Link/Kasa account email
+- `TPLC_USERNAME` - TP-Link account email
 - `TPLC_PASSWORD` - Account password
 
-Tokens are stored securely in your OS keychain (macOS Keychain, Windows Credential Manager, Linux Secret Service).
+Login authenticates with both Kasa and Tapo clouds simultaneously (same TP-Link credentials). Tokens are stored securely in your OS keychain (macOS Keychain, Windows Credential Manager, Linux Secret Service).
 
 ### Devices
 
@@ -66,7 +66,7 @@ tplc power status "Device Name"     # Check on/off
 
 ### Energy monitoring
 
-For devices with energy monitoring (HS110, KP115, KP125, HS300 outlets):
+For devices with energy monitoring (HS110, KP115, KP125, P110, HS300 outlets):
 
 ```bash
 tplc energy realtime "Device Name"              # Current power draw
@@ -78,7 +78,7 @@ tplc energy summary                             # All emeter devices
 
 ### Light strip controls
 
-For light strip devices (KL430, KL420L5):
+For light devices (KL430, KL420L5, L530):
 
 ```bash
 tplc light brightness "Strip" 75                        # Set brightness (0-100)
@@ -117,12 +117,13 @@ tplc devices list -t
 ```
 
 ```
-╭──────────────────┬────────┬────────┬────────┬────────┬───────────────╮
-│ NAME             │ MODEL  │ TYPE   │ STATUS │ EMETER │ DEVICE ID     │
-├──────────────────┼────────┼────────┼────────┼────────┼───────────────┤
-│ Living Room Lamp │ KP115  │ plug   │ online │ yes    │ 80067B24...   │
-│ Porch Light      │ HS200  │ switch │ online │ no     │ A3F19C02...   │
-╰──────────────────┴────────┴────────┴────────┴────────┴───────────────╯
+╭──────────────────┬────────┬────────┬───────┬────────┬────────┬───────────────╮
+│ NAME             │ MODEL  │ TYPE   │ CLOUD │ STATUS │ EMETER │ DEVICE ID     │
+├──────────────────┼────────┼────────┼───────┼────────┼────────┼───────────────┤
+│ Living Room Lamp │ KP115  │ plug   │ kasa  │ online │ yes    │ 80067B24...   │
+│ Porch Light      │ HS200  │ switch │ kasa  │ online │ no     │ A3F19C02...   │
+│ Smart Plug Mini  │ P100   │ plug   │ tapo  │ online │ no     │ C2E8A901...   │
+╰──────────────────┴────────┴────────┴───────┴────────┴────────┴───────────────╯
 ```
 
 Errors are output as JSON to stderr with appropriate exit codes:
@@ -143,9 +144,11 @@ Devices can be referenced by:
 3. Case-insensitive alias match
 4. Partial alias match (if unambiguous)
 
-Multi-outlet devices (HS300, KP303, KP400, etc.) expose each outlet as a separate device addressable by its alias.
+Multi-outlet devices (HS300, KP303, KP400, etc.) expose each outlet as a separate device addressable by its alias. Devices from both Kasa and Tapo clouds are searched automatically.
 
 ## Supported devices
+
+### Kasa devices
 
 | Model | Type | Energy monitoring |
 |-------|------|:-:|
@@ -159,10 +162,23 @@ Multi-outlet devices (HS300, KP303, KP400, etc.) expose each outlet as a separat
 | EP40 | Outdoor Plug | |
 | KL420L5, KL430 | Smart Light Strip | |
 
+### Tapo devices
+
+| Model | Type | Energy monitoring |
+|-------|------|:-:|
+| P100 | Mini Smart Wi-Fi Plug | |
+| P110 | Mini Smart Wi-Fi Plug | Yes |
+| L530 | Smart Wi-Fi Light Bulb | |
+
+## Claude Code usage
+
+`tplc` is designed to be used by AI agents. All commands output structured JSON by default (errors go to stderr), so agents can parse results directly. See [CLAUDE.md](CLAUDE.md) for skill/plugin integration guidance.
+
 ## Related
 
 - [tplink-cloud-api](https://github.com/piekstra/tplink-cloud-api) - Python library this CLI is based on
+- [Contributing](CONTRIBUTING.md) - How to contribute to this project
 
 ## License
 
-MIT
+GPL-3.0 - see [LICENSE](LICENSE) for details.

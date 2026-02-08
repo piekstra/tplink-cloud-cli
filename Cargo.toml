@@ -2,8 +2,8 @@
 name = "tplc"
 version = "0.1.0"
 edition = "2021"
-description = "CLI for TP-Link Cloud API - control Kasa smart home devices"
-license = "MIT"
+description = "CLI for TP-Link Cloud API - control Kasa and Tapo smart home devices"
+license = "GPL-3.0"
 repository = "https://github.com/piekstra/tplink-cloud-cli"
 readme = "README.md"
 

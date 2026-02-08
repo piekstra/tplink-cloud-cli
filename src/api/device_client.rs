@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use reqwest::Certificate;
 use serde_json::json;
 
+use super::cloud_type::CloudType;
 use super::errors::*;
 use super::response::ApiResponse;
 use super::signing::get_signing_headers;
@@ -13,16 +14,19 @@ const CA_CERT_PEM: &[u8] = include_bytes!("../../certs/tplink-ca-chain.pem");
 pub struct DeviceClient {
     client: reqwest::Client,
     host: String,
-    #[allow(dead_code)]
-    token: String,
-    #[allow(dead_code)]
-    term_id: String,
+    cloud_type: CloudType,
     query_params: HashMap<String, String>,
     verbose: bool,
 }
 
 impl DeviceClient {
-    pub fn new(host: &str, token: &str, term_id: &str, verbose: bool) -> Result<Self, AppError> {
+    pub fn new(
+        host: &str,
+        token: &str,
+        term_id: &str,
+        verbose: bool,
+        cloud_type: CloudType,
+    ) -> Result<Self, AppError> {
         let cert = Certificate::from_pem(CA_CERT_PEM)?;
         let client = reqwest::Client::builder()
             .add_root_certificate(cert)
@@ -31,8 +35,8 @@ impl DeviceClient {
             .build()?;
 
         let mut query_params = HashMap::new();
-        query_params.insert("appName".into(), "Kasa_Android_Mix".into());
-        query_params.insert("appVer".into(), "3.4.451".into());
+        query_params.insert("appName".into(), cloud_type.app_type().into());
+        query_params.insert("appVer".into(), cloud_type.app_version().into());
         query_params.insert("netType".into(), "wifi".into());
         query_params.insert("termID".into(), term_id.into());
         query_params.insert("ospf".into(), "Android 14".into());
@@ -46,8 +50,7 @@ impl DeviceClient {
         Ok(Self {
             client,
             host: host.to_string(),
-            token: token.to_string(),
-            term_id: term_id.to_string(),
+            cloud_type,
             query_params,
             verbose,
         })
@@ -61,26 +64,45 @@ impl DeviceClient {
     ) -> Result<Option<serde_json::Value>, AppError> {
         let request_data_str = serde_json::to_string(&request_data)?;
 
-        let body = json!({
-            "method": "passthrough",
-            "params": {
-                "deviceId": device_id,
-                "requestData": request_data_str,
+        // Kasa uses V1-style method/params wrapper on root path.
+        // Tapo uses flat body on /api/v2/common/passthrough.
+        let (body, url_path) = match self.cloud_type {
+            CloudType::Kasa => {
+                let body = json!({
+                    "method": "passthrough",
+                    "params": {
+                        "deviceId": device_id,
+                        "requestData": request_data_str,
+                    }
+                });
+                (body, "/")
             }
-        });
+            CloudType::Tapo => {
+                let body = json!({
+                    "deviceId": device_id,
+                    "requestData": request_data_str,
+                });
+                (body, "/api/v2/common/passthrough")
+            }
+        };
 
         let body_json = serde_json::to_string(&body)?;
-        let url_path = "/";
-        let signing = get_signing_headers(&body_json, url_path);
+        let signing = get_signing_headers(&body_json, url_path, self.cloud_type);
+
+        let url = if url_path == "/" {
+            self.host.clone()
+        } else {
+            format!("{}{}", self.host, url_path)
+        };
 
         if self.verbose {
-            eprintln!("POST {}/", self.host);
+            eprintln!("[{}] POST {}", self.cloud_type, url);
             eprintln!("Body: {}", body_json);
         }
 
         let response = self
             .client
-            .post(&self.host)
+            .post(&url)
             .query(&self.query_params)
             .header("Content-Type", "application/json;charset=UTF-8")
             .header("Content-MD5", &signing.content_md5)
