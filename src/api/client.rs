@@ -278,9 +278,7 @@ impl TPLinkApi {
                     });
                 }
 
-                if inner_error == ERR_WRONG_CREDENTIALS
-                    || inner_error == ERR_ACCOUNT_LOCKED
-                {
+                if inner_error == ERR_WRONG_CREDENTIALS || inner_error == ERR_ACCOUNT_LOCKED {
                     return Err(AppError::Auth {
                         message: inner_msg,
                         error_code: Some(inner_error),
