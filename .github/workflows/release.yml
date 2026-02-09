@@ -56,6 +56,13 @@ jobs:
           sudo apt-get install -y libdbus-1-dev pkg-config
           if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-gnu" ]]; then
             sudo dpkg --add-architecture arm64
+            # arm64 packages live on ports.ubuntu.com, not the default amd64 mirrors.
+            # Pin existing sources to amd64-only, then add ports for arm64.
+            # Handle both traditional .list and DEB822 .sources formats
+            sudo sed -i 's/^deb /deb [arch=amd64] /' /etc/apt/sources.list 2>/dev/null || true
+            sudo sed -i 's/^deb /deb [arch=amd64] /' /etc/apt/sources.list.d/*.list 2>/dev/null || true
+            sudo sed -i '/^Architectures:/d; /^Types:/a Architectures: amd64' /etc/apt/sources.list.d/*.sources 2>/dev/null || true
+            printf 'deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble main universe\ndeb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble-updates main universe\ndeb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble-security main universe\n' | sudo tee /etc/apt/sources.list.d/arm64-cross.list
             sudo apt-get update
             sudo apt-get install -y gcc-aarch64-linux-gnu libdbus-1-dev:arm64
             echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
