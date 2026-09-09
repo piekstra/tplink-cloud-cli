@@ -41,7 +41,10 @@ async fn iot_call(
         auth.token, auth.term_id
     );
     let mut data = data;
-    data["uri"] = json!(format!("com.tplinkra.devicegroups.impl.{}", request_class(method)));
+    data["uri"] = json!(format!(
+        "com.tplinkra.devicegroups.impl.{}",
+        request_class(method)
+    ));
     let body = json!({
         "requestId": request_id,
         "module": "device-groups",
@@ -74,16 +77,25 @@ async fn iot_call(
         eprintln!("HTTP {} ({} bytes)", status.as_u16(), text.len());
     }
     let v: Value = serde_json::from_str(&text).map_err(|_| AppError::Api {
-        message: format!("HTTP {}: {}", status.as_u16(), text.chars().take(300).collect::<String>()),
+        message: format!(
+            "HTTP {}: {}",
+            status.as_u16(),
+            text.chars().take(300).collect::<String>()
+        ),
         error_code: Some(status.as_u16() as i32),
     })?;
-    if v.get("status").and_then(Value::as_str) == Some("SUCCESS") || v.get("data").is_some() && v.get("errorCode").is_none() {
+    if v.get("status").and_then(Value::as_str) == Some("SUCCESS")
+        || v.get("data").is_some() && v.get("errorCode").is_none()
+    {
         Ok(v)
     } else {
         Err(AppError::Api {
             message: format!(
                 "{method}: {}",
-                v.get("msg").or(v.get("message")).and_then(Value::as_str).unwrap_or(&text.chars().take(300).collect::<String>())
+                v.get("msg")
+                    .or(v.get("message"))
+                    .and_then(Value::as_str)
+                    .unwrap_or(&text.chars().take(300).collect::<String>())
             ),
             error_code: v.get("errorCode").and_then(Value::as_i64).map(|n| n as i32),
         })
@@ -139,12 +151,21 @@ pub async fn handle(cmd: &GroupsCommand, config: &RuntimeConfig) -> Result<(), A
                 devices
                     .iter()
                     .find(|(info, _, _)| info.id() == id)
-                    .map(|(info, _, child)| child.clone().unwrap_or_else(|| info.alias_or_name().to_string()))
+                    .map(|(info, _, child)| {
+                        child
+                            .clone()
+                            .unwrap_or_else(|| info.alias_or_name().to_string())
+                    })
             };
             let mut items = Vec::new();
             for g in &groups {
                 let room = g.get("alias").and_then(Value::as_str).unwrap_or("");
-                for it in g.get("items").and_then(Value::as_array).into_iter().flatten() {
+                for it in g
+                    .get("items")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
                     if let Some(id) = it.get("id").and_then(Value::as_str) {
                         items.push(json!({
                             "id": id,
