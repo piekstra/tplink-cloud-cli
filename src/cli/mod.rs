@@ -1,6 +1,8 @@
+pub mod api;
 pub mod auth;
 pub mod devices;
 pub mod energy;
+pub mod groups;
 pub mod info;
 pub mod light;
 pub mod output;
@@ -31,7 +33,18 @@ pub struct Cli {
 #[derive(Subcommand)]
 pub enum Commands {
     /// Authenticate with TP-Link Cloud
-    Login,
+    Login {
+        /// Read the password from stdin (the scriptable path:
+        /// `op read … | tplc login --stdin --username you@example.com`)
+        #[arg(long)]
+        stdin: bool,
+        /// Account email (with --stdin; otherwise prompted)
+        #[arg(long)]
+        username: Option<String>,
+        /// The MFA code TP-Link emailed, to resume a login that stopped for one
+        #[arg(long)]
+        mfa_code: Option<String>,
+    },
 
     /// Clear stored authentication tokens
     Logout,
@@ -64,6 +77,21 @@ pub enum Commands {
     Info(info::InfoCommand),
 
     /// Control indicator LED
+    /// Kasa device groups — the app's rooms (IoT cloud)
+    #[command(subcommand)]
+    Groups(groups::GroupsCommand),
+    /// Call any cloud method by name and print the raw response (for methods
+    /// the CLI doesn't model yet). Example: `tplc api listDeviceGroups`.
+    Api {
+        /// Method name, e.g. getDeviceList, listDeviceGroups
+        method: String,
+        /// JSON object for the method's params
+        #[arg(long)]
+        params: Option<String>,
+        /// Which cloud to call: kasa or tapo
+        #[arg(long, default_value = "kasa")]
+        cloud: String,
+    },
     Led {
         /// LED state
         #[arg(value_enum)]

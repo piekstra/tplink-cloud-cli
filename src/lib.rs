@@ -33,7 +33,11 @@ pub async fn run(cli_args: cli::Cli) -> i32 {
 
 async fn dispatch(command: cli::Commands, config: &RuntimeConfig) -> Result<(), AppError> {
     match command {
-        cli::Commands::Login => cli::auth::handle_login(config).await,
+        cli::Commands::Login {
+            stdin,
+            username,
+            mfa_code,
+        } => cli::auth::handle_login(config, stdin, username.as_deref(), mfa_code.as_deref()).await,
         cli::Commands::Logout => cli::auth::handle_logout(config).await,
         cli::Commands::Status => cli::auth::handle_status(config).await,
         cli::Commands::Devices(cmd) => cli::devices::handle(&cmd, config).await,
@@ -42,6 +46,12 @@ async fn dispatch(command: cli::Commands, config: &RuntimeConfig) -> Result<(), 
         cli::Commands::Light(cmd) => cli::light::handle(&cmd, config).await,
         cli::Commands::Schedule(cmd) => cli::schedule::handle(&cmd, config).await,
         cli::Commands::Info(cmd) => cli::info::handle(&cmd, config).await,
+        cli::Commands::Groups(cmd) => cli::groups::handle(&cmd, config).await,
+        cli::Commands::Api {
+            method,
+            params,
+            cloud,
+        } => cli::api::handle(&method, params.as_deref(), &cloud, config).await,
         cli::Commands::Led { state, device } => {
             let dev = resolve::resolve_device(&device, config.verbose).await?;
             let on = matches!(state, cli::LedState::On);

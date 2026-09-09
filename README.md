@@ -53,6 +53,26 @@ Credentials can also be provided via environment variables:
 
 Login authenticates with both Kasa and Tapo clouds simultaneously (same TP-Link credentials). Tokens are stored securely in your OS keychain (macOS Keychain, Windows Credential Manager, Linux Secret Service).
 
+Scripted login (the password never touches argv; the email is not a secret):
+
+```bash
+op read "op://Private/www.tplinkcloud.com/password" | tplc login --stdin --username you@example.com
+# if TP-Link emails an MFA code, the login parks and you resume with it:
+op read "op://Private/www.tplinkcloud.com/password" | tplc login --stdin --username you@example.com --mfa-code 123456
+```
+
+### Device groups (Kasa rooms)
+
+```bash
+tplc groups list                    # the Kasa app's device groups, from TP-Link's IoT cloud
+tplc groups devices                 # every grouped device as device-rooms/v1, for `ghome audit --expect -`
+tplc api getDeviceList              # raw method passthrough on the account cloud
+```
+
+Groups live on `https://api.tplinkra.com/v1/device-groups/…`, a different
+host from the account cloud, authenticated with the same Kasa token. An
+account that keeps its rooms in the Tapo app returns an empty listing here.
+
 ### Devices
 
 ```bash

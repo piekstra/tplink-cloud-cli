@@ -403,6 +403,22 @@ impl TPLinkApi {
         })
     }
 
+    /// Call any cloud method by name (`{"method": …, "params": …}` on the
+    /// account endpoint) and return the raw response. The passthrough for
+    /// methods the CLI doesn't model yet, such as the device-group (room) API.
+    pub async fn call_method(
+        &self,
+        token: &str,
+        method: &str,
+        params: Option<serde_json::Value>,
+    ) -> Result<ApiResponse, AppError> {
+        let body = match params {
+            Some(p) => json!({"method": method, "params": p}),
+            None => json!({"method": method}),
+        };
+        self.request_post_v1(&body, Some(token)).await
+    }
+
     /// Get the list of devices registered to the account.
     pub async fn get_device_info_list(
         &self,

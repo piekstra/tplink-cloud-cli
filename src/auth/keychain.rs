@@ -93,3 +93,42 @@ pub fn clear_tokens() -> Result<(), AppError> {
     delete_value("tapo_regional_url")?;
     Ok(())
 }
+
+const PENDING_KEY: &str = "mfa_pending";
+
+/// An in-flight login that stopped for an MFA code: the terminal id the code
+/// was requested for must be reused, or the code is presented against a
+/// session that never asked for one.
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct PendingLogin {
+    pub username: String,
+    pub term_id: String,
+    /// "kasa" or "tapo": the cloud waiting for a code.
+    pub cloud: String,
+    /// Kasa tokens already obtained when Tapo is the one waiting.
+    pub kasa_token: Option<String>,
+    pub kasa_refresh_token: Option<String>,
+    pub kasa_regional_url: Option<String>,
+}
+
+pub fn store_pending(p: &PendingLogin) -> Result<(), AppError> {
+    let blob = serde_json::to_string(p).map_err(|e| AppError::Keychain(e.to_string()))?;
+    Entry::new(SERVICE, PENDING_KEY)
+        .and_then(|e| e.set_password(&blob))
+        .map_err(|e| AppError::Keychain(e.to_string()))
+}
+
+pub fn get_pending() -> Result<Option<PendingLogin>, AppError> {
+    match Entry::new(SERVICE, PENDING_KEY).and_then(|e| e.get_password()) {
+        Ok(blob) => Ok(serde_json::from_str(&blob).ok()),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(AppError::Keychain(e.to_string())),
+    }
+}
+
+pub fn clear_pending() -> Result<(), AppError> {
+    match Entry::new(SERVICE, PENDING_KEY).and_then(|e| e.delete_credential()) {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(e) => Err(AppError::Keychain(e.to_string())),
+    }
+}
