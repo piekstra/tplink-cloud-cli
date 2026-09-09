@@ -34,63 +34,58 @@ fn delete_value(key: &str) -> Result<(), AppError> {
     }
 }
 
+/// One keychain item holds the whole session. Every item read is a macOS
+/// permission prompt for a freshly built binary, and the old layout kept
+/// eight of them; a single JSON blob is one prompt.
+const SESSION_KEY: &str = "session";
+const LEGACY_KEYS: &[&str] = &[
+    "token",
+    "refresh_token",
+    "username",
+    "regional_url",
+    "term_id",
+    "tapo_token",
+    "tapo_refresh_token",
+    "tapo_regional_url",
+];
+
 pub fn store_tokens(tokens: &TokenSet) -> Result<(), AppError> {
-    set_value("token", &tokens.token)?;
-    if let Some(ref rt) = tokens.refresh_token {
-        set_value("refresh_token", rt)?;
-    }
-    set_value("username", &tokens.username)?;
-    set_value("regional_url", &tokens.regional_url)?;
-    set_value("term_id", &tokens.term_id)?;
-
-    // Tapo tokens
-    if let Some(ref tt) = tokens.tapo_token {
-        set_value("tapo_token", tt)?;
-    }
-    if let Some(ref trt) = tokens.tapo_refresh_token {
-        set_value("tapo_refresh_token", trt)?;
-    }
-    if let Some(ref tru) = tokens.tapo_regional_url {
-        set_value("tapo_regional_url", tru)?;
-    }
-
-    Ok(())
+    let blob = serde_json::to_string(tokens).map_err(|e| AppError::Keychain(e.to_string()))?;
+    set_value(SESSION_KEY, &blob)
 }
 
 pub fn get_tokens() -> Result<Option<TokenSet>, AppError> {
+    if let Some(blob) = get_value(SESSION_KEY)? {
+        return Ok(serde_json::from_str(&blob).ok());
+    }
+    // One-time migration from the per-field layout: read it, write the
+    // single item, and drop the old items so they never prompt again.
     let token = match get_value("token")? {
         Some(t) => t,
         None => return Ok(None),
     };
-    let username = get_value("username")?.unwrap_or_default();
-    let regional_url = get_value("regional_url")?.unwrap_or_default();
-    let term_id = get_value("term_id")?.unwrap_or_default();
-    let refresh_token = get_value("refresh_token")?;
-    let tapo_token = get_value("tapo_token")?;
-    let tapo_refresh_token = get_value("tapo_refresh_token")?;
-    let tapo_regional_url = get_value("tapo_regional_url")?;
-
-    Ok(Some(TokenSet {
+    let migrated = TokenSet {
         token,
-        refresh_token,
-        username,
-        regional_url,
-        term_id,
-        tapo_token,
-        tapo_refresh_token,
-        tapo_regional_url,
-    }))
+        refresh_token: get_value("refresh_token")?,
+        username: get_value("username")?.unwrap_or_default(),
+        regional_url: get_value("regional_url")?.unwrap_or_default(),
+        term_id: get_value("term_id")?.unwrap_or_default(),
+        tapo_token: get_value("tapo_token")?,
+        tapo_refresh_token: get_value("tapo_refresh_token")?,
+        tapo_regional_url: get_value("tapo_regional_url")?,
+    };
+    store_tokens(&migrated)?;
+    for k in LEGACY_KEYS {
+        delete_value(k)?;
+    }
+    Ok(Some(migrated))
 }
 
 pub fn clear_tokens() -> Result<(), AppError> {
-    delete_value("token")?;
-    delete_value("refresh_token")?;
-    delete_value("username")?;
-    delete_value("regional_url")?;
-    delete_value("term_id")?;
-    delete_value("tapo_token")?;
-    delete_value("tapo_refresh_token")?;
-    delete_value("tapo_regional_url")?;
+    delete_value(SESSION_KEY)?;
+    for k in LEGACY_KEYS {
+        delete_value(k)?;
+    }
     Ok(())
 }
 
