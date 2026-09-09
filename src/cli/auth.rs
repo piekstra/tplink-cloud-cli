@@ -29,9 +29,15 @@ pub async fn handle_login(
         let pw = pw.trim_end_matches(['\r', '\n']).to_string();
         let user = username_flag
             .map(str::to_string)
-            .or_else(|| std::env::var("TPLC_USERNAME").ok().filter(|u| !u.is_empty()))
+            .or_else(|| {
+                std::env::var("TPLC_USERNAME")
+                    .ok()
+                    .filter(|u| !u.is_empty())
+            })
             .or_else(|| pending.as_ref().map(|p| p.username.clone()))
-            .ok_or_else(|| AppError::InvalidInput("--stdin needs --username (or TPLC_USERNAME)".into()))?;
+            .ok_or_else(|| {
+                AppError::InvalidInput("--stdin needs --username (or TPLC_USERNAME)".into())
+            })?;
         if pw.is_empty() {
             return Err(AppError::InvalidInput("no password on stdin".into()));
         }
@@ -50,11 +56,10 @@ pub async fn handle_login(
                     .map_err(|e| AppError::InvalidInput(e.to_string()))?;
                 (username, password)
             }
-            None => {
-                return Err(AppError::InvalidInput(
-                    "not a terminal: pass the password with --stdin and the account with --username".into(),
-                ))
-            }
+            None => return Err(AppError::InvalidInput(
+                "not a terminal: pass the password with --stdin and the account with --username"
+                    .into(),
+            )),
         }
     };
 
@@ -84,7 +89,10 @@ pub async fn handle_login(
                     if interactive {
                         eprintln!(
                             "Kasa MFA verification required{}",
-                            email.as_ref().map(|e| format!(" for {}", e)).unwrap_or_default()
+                            email
+                                .as_ref()
+                                .map(|e| format!(" for {}", e))
+                                .unwrap_or_default()
                         );
                         let code: String = Input::new()
                             .with_prompt("Enter Kasa MFA code")
@@ -131,7 +139,10 @@ pub async fn handle_login(
             if interactive {
                 eprintln!(
                     "Tapo MFA verification required{}",
-                    email.as_ref().map(|e| format!(" for {}", e)).unwrap_or_default()
+                    email
+                        .as_ref()
+                        .map(|e| format!(" for {}", e))
+                        .unwrap_or_default()
                 );
                 let code: String = Input::new()
                     .with_prompt("Enter Tapo MFA code")

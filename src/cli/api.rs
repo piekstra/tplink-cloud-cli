@@ -36,7 +36,12 @@ pub async fn handle(
             auth.tapo_token.clone().ok_or(AppError::NotAuthenticated)?,
         ),
     };
-    let api = TPLinkApi::new(Some(host), config.verbose, Some(auth.term_id.clone()), cloud_type)?;
+    let api = TPLinkApi::new(
+        Some(host),
+        config.verbose,
+        Some(auth.term_id.clone()),
+        cloud_type,
+    )?;
     let resp = api.call_method(&token, method, params).await?;
     print_json(&json!({
         "error_code": resp.error_code,
