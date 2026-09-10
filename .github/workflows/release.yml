@@ -1,0 +1,166 @@
+name: Release
+
+# Automatic releases. On every push to `main`, if the version in Cargo.toml has
+# no matching `v<version>` git tag yet, this builds per-platform binaries and
+# publishes a release (creating the tag at the merge commit). So cutting a
+# release is just: bump `version` in Cargo.toml and merge — no manual tagging.
+# Can also be run by hand from the Actions tab (workflow_dispatch).
+#
+# Assets are `tplc-<target>.tar.gz` (+ `.sha256`), exactly the name
+# `tplc self-update` looks for on the latest release. aarch64 Linux is
+# intentionally omitted: the secret-service keyring backend links libdbus,
+# awkward to cross-compile.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    name: check version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      release: ${{ steps.v.outputs.release }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # need tags to tell whether this version already shipped
+      - id: v
+        run: |
+          version=$(sed -nE 's/^version = "(.*)"/\1/p' Cargo.toml | head -1)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if git tag -l "v$version" | grep -q .; then
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "v$version already released — nothing to do." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "release=true" >> "$GITHUB_OUTPUT"
+            echo "Releasing v$version." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  build:
+    name: build ${{ matrix.target }}
+    needs: check
+    if: needs.check.outputs.release == 'true'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: linux deps
+        if: runner.os == 'Linux'
+        run: |
+          # Ubuntu mirrors fail index downloads now and then; retry before giving up.
+          for i in 1 2 3; do sudo apt-get update && break; sleep 15; done
+          sudo apt-get install -y libdbus-1-dev pkg-config
+      - name: build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: package
+        run: |
+          tar -czf "tplc-${{ matrix.target }}.tar.gz" -C "target/${{ matrix.target }}/release" tplc
+          shasum -a 256 "tplc-${{ matrix.target }}.tar.gz" > "tplc-${{ matrix.target }}.tar.gz.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tplc-${{ matrix.target }}
+          path: tplc-${{ matrix.target }}.tar.gz*
+
+  release:
+    name: publish release
+    needs: [check, build]
+    if: needs.check.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: publish
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.check.outputs.version }}
+          files: dist/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+
+  # Keep `brew install piekstra/tap/tplc` working: point the formula at the
+  # new tarballs. Skipped (not failed) when the tap token isn't configured.
+  homebrew:
+    name: update homebrew tap
+    needs: [check, release]
+    if: needs.check.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: update formula
+        env:
+          GH_TOKEN: ${{ secrets.TAP_TOKEN }}
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "TAP_TOKEN secret not set, skipping Homebrew update"
+            exit 0
+          fi
+          sha() { awk '{print $1}' "dist/tplc-$1.tar.gz.sha256"; }
+          BASE_URL="https://github.com/piekstra/tplink-cloud-cli/releases/download/v${VERSION}"
+          cat > /tmp/tplc.rb <<RUBY
+          class Tplc < Formula
+            desc "TP-Link Kasa and Tapo smart-home devices from the terminal"
+            homepage "https://github.com/piekstra/tplink-cloud-cli"
+            license "GPL-3.0"
+            version "${VERSION}"
+
+            on_macos do
+              if Hardware::CPU.arm?
+                url "${BASE_URL}/tplc-aarch64-apple-darwin.tar.gz"
+                sha256 "$(sha aarch64-apple-darwin)"
+              else
+                url "${BASE_URL}/tplc-x86_64-apple-darwin.tar.gz"
+                sha256 "$(sha x86_64-apple-darwin)"
+              end
+            end
+
+            on_linux do
+              url "${BASE_URL}/tplc-x86_64-unknown-linux-gnu.tar.gz"
+              sha256 "$(sha x86_64-unknown-linux-gnu)"
+            end
+
+            def install
+              bin.install "tplc"
+            end
+
+            test do
+              assert_match version.to_s, shell_output("#{bin}/tplc --version")
+            end
+          end
+          RUBY
+          sed -i 's/^          //' /tmp/tplc.rb
+          CONTENT=$(base64 -w0 /tmp/tplc.rb)
+          EXISTING_SHA=$(gh api repos/piekstra/homebrew-tap/contents/Formula/tplc.rb --jq '.sha' 2>/dev/null || echo "")
+          if [ -n "$EXISTING_SHA" ]; then
+            gh api repos/piekstra/homebrew-tap/contents/Formula/tplc.rb -X PUT \
+              -f message="Update tplc to v${VERSION}" -f content="${CONTENT}" -f sha="${EXISTING_SHA}"
+          else
+            gh api repos/piekstra/homebrew-tap/contents/Formula/tplc.rb -X PUT \
+              -f message="Add tplc v${VERSION}" -f content="${CONTENT}"
+          fi
