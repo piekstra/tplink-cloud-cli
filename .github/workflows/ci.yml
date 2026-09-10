@@ -64,6 +64,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      # rustsec/audit-check posts a check run; gitleaks-action comments on the PR.
+      checks: write
       pull-requests: write
       security-events: write
     steps:
