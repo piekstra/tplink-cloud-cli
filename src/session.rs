@@ -330,8 +330,8 @@ impl<S: SecretItems> Sessions<S> {
 
 /// Refresh one cloud's token with its refresh token and persist the result.
 /// `TokenExpired` (exit 3) when the refresh token itself has lapsed.
-pub async fn refresh(
-    sessions: &Sessions,
+pub async fn refresh<S: SecretItems>(
+    sessions: &Sessions<S>,
     tokens: &mut TokenSet,
     cloud: CloudType,
     verbose: bool,
@@ -387,8 +387,8 @@ pub async fn refresh(
 /// `op` builds its request from the `TokenSet` it is handed (cloning the
 /// token/URL it needs into the future), so the retry sees the refreshed
 /// values without the caller threading them through.
-pub async fn with_refresh<T, F, Fut>(
-    sessions: &Sessions,
+pub async fn with_refresh<S: SecretItems, T, F, Fut>(
+    sessions: &Sessions<S>,
     tokens: &mut TokenSet,
     cloud: CloudType,
     verbose: bool,
@@ -746,7 +746,7 @@ mod tests {
 
     #[test]
     fn with_refresh_passes_success_and_other_errors_through_untouched() {
-        let sessions = Sessions::new();
+        let sessions = Sessions::with_stores(MemStore::new("piekstra.tplc"), MemStore::new("tplc"));
         let mut t = tokens("k");
         let calls = Cell::new(0);
         let ok = block_on(with_refresh(
@@ -786,7 +786,7 @@ mod tests {
 
     #[test]
     fn with_refresh_reports_the_refresh_failure_and_does_not_retry() {
-        let sessions = Sessions::new();
+        let sessions = Sessions::with_stores(MemStore::new("piekstra.tplc"), MemStore::new("tplc"));
         let mut t = tokens("k"); // no refresh token: refresh fails before any request
         let calls = Cell::new(0);
         let err = block_on(with_refresh(
