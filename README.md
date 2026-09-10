@@ -116,7 +116,8 @@ Writes prompt for confirmation unless `--force`; non-interactive runs
 network, and every write is read back from the cloud before it is reported.
 
 Both `rooms devices` and `groups devices` emit `device-rooms/v1` — every
-device with the room the vendor app files it under — which is what
+device with the room the vendor app files it under (a Tapo device in no
+room keeps its row with `room` omitted) — which is what
 [`ghome audit`](https://github.com/piekstra/google-home-cli) consumes to
 check Google Home's rooms against the vendor's:
 

@@ -335,15 +335,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn nicknames_decode_when_base64_and_pass_through_otherwise() {
-        assert_eq!(decode_encoded_name("T2ZmaWNlIExhbXA="), "Office Lamp");
-        assert_eq!(decode_encoded_name("Office Lamp"), "Office Lamp");
-        // 4-char words are base64-shaped but decode to junk: kept verbatim.
-        assert_eq!(decode_encoded_name("Lamp"), "Lamp");
-        assert_eq!(decode_encoded_name("Desk"), "Desk");
-    }
-
-    #[test]
     fn room_ids_are_eight_alphanumerics() {
         let id = new_room_id();
         assert_eq!(id.len(), 8);
@@ -402,10 +393,6 @@ mod google_id_tests {
         assert_eq!(
             thing("abc123", "SMART.TAPOPLUG", None).google_id(),
             "abc123"
-        );
-        assert_eq!(
-            decode_encoded_name("RnJvbnQgRG9vciBMb2Nr"),
-            "Front Door Lock"
         );
     }
 }

@@ -394,7 +394,8 @@ pub fn room_gone(families: &[Family], room_id: &str) -> bool {
 /// the account cloud's alias over the Tapo nickname. One of Tapo's own
 /// devices in no room keeps a row without `room`, so a consumer can report
 /// the gap; a Kasa device shared into the Tapo app is the Kasa app's to
-/// file (`groups devices`), so roomless it is left out.
+/// file (`groups devices`), so roomless it is left out. A thing in no home
+/// counts as the default home's.
 pub fn device_room_rows(
     things: &[Thing],
     homes: &[&Family],
@@ -408,11 +409,13 @@ pub fn device_room_rows(
                 Some(rid) => Some(rooms.iter().find(|r| r.room.id == rid)?),
                 None => None,
             };
-            let in_scope = room.is_some()
-                || (t.is_native_tapo()
-                    && t.family_id
-                        .as_deref()
-                        .is_none_or(|fid| homes.iter().any(|h| h.id == fid)));
+            // A thing that names no home is the default home's, as `rooms
+            // move` treats it (`target_homes`), so it never shows under another.
+            let in_home = match t.family_id.as_deref() {
+                Some(fid) => homes.iter().any(|h| h.id == fid),
+                None => homes.iter().any(|h| h.is_default),
+            };
+            let in_scope = room.is_some() || (t.is_native_tapo() && in_home);
             if !in_scope {
                 return None;
             }
@@ -825,6 +828,15 @@ mod tests {
         }))
         .unwrap();
         assert!(device_room_rows(&[loose], &homes, |_| None).is_empty());
+        // A Tapo device in no home is the default home's, never another's.
+        let homeless: Thing = serde_json::from_value(json!({
+            "thingName": "TAPO_P100_9999", "familyId": null, "roomId": null,
+            "nickname": "Attic Plug", "deviceType": "SMART.TAPOPLUG", "mac": "00:00:00:00:00:10"
+        }))
+        .unwrap();
+        let only = std::slice::from_ref(&homeless);
+        assert_eq!(device_room_rows(only, &homes, |_| None).len(), 1);
+        assert!(device_room_rows(only, &[&elsewhere], |_| None).is_empty());
     }
 
     #[test]
