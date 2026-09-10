@@ -10,7 +10,6 @@ use crate::api::client::TPLinkApi;
 use crate::api::cloud_type::CloudType;
 use crate::api::device_client::DeviceClient;
 use crate::cli::emit::Ctx;
-use crate::error::AppError;
 use crate::models::device::Device;
 use crate::models::device_info::DeviceInfo;
 use crate::models::device_type::DeviceType;
@@ -97,22 +96,18 @@ async fn fetch_cloud(
     cloud: CloudType,
     expand_children: bool,
 ) -> Result<Vec<Listed>, CliError> {
-    let (mut token, regional_url) = tokens.cloud_access(cloud)?;
-    let api = TPLinkApi::new(
-        Some(regional_url),
-        ctx.verbose,
-        Some(tokens.term_id.clone()),
-        cloud,
-    )?;
-    let device_list = match api.get_device_info_list(&token).await {
-        Ok(list) => list,
-        Err(AppError::TokenExpired { .. }) => {
-            session::refresh(ctx.sessions, tokens, cloud, ctx.verbose).await?;
-            token = tokens.cloud_access(cloud)?.0;
-            api.get_device_info_list(&token).await?
+    let verbose = ctx.verbose;
+    let device_list = session::with_refresh(ctx.sessions, tokens, cloud, verbose, |t| {
+        let access = t.cloud_access(cloud);
+        let term_id = t.term_id.clone();
+        async move {
+            let (token, regional_url) = access?;
+            let api = TPLinkApi::new(Some(regional_url), verbose, Some(term_id), cloud)?;
+            api.get_device_info_list(&token).await
         }
-        Err(e) => return Err(e.into()),
-    };
+    })
+    .await?;
+    let (token, regional_url) = tokens.cloud_access(cloud)?;
 
     let mut devices = Vec::new();
     for device_json in &device_list {
@@ -129,7 +124,7 @@ async fn fetch_cloud(
         });
         if expand_children && dtype.has_children() {
             let client = DeviceClient::new(
-                info.app_server_url.as_deref().unwrap_or(&api.host),
+                info.app_server_url.as_deref().unwrap_or(&regional_url),
                 &token,
                 &tokens.term_id,
                 ctx.verbose,

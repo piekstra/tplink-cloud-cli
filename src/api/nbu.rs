@@ -154,9 +154,15 @@ impl NbuClient {
         })
     }
 
-    /// Swap in a refreshed Tapo token.
-    pub fn set_token(&mut self, token: &str) {
-        self.token = token.to_string();
+    /// The same connection (the HTTP client is shared behind an `Arc`)
+    /// presenting a different token — what a retry after a refresh uses.
+    pub fn with_token(&self, token: &str) -> NbuClient {
+        NbuClient {
+            client: self.client.clone(),
+            base: self.base.clone(),
+            token: token.to_string(),
+            verbose: self.verbose,
+        }
     }
 
     async fn call(
@@ -276,9 +282,9 @@ impl NbuClient {
     /// response is empty, so the caller reads `things` back to verify.
     pub async fn move_things(
         &self,
-        family_id: String,
-        room_id: String,
-        thing_names: Vec<String>,
+        family_id: &str,
+        room_id: &str,
+        thing_names: &[String],
     ) -> Result<(), AppError> {
         let body = json!({"familyId": family_id, "roomId": room_id, "thingNames": thing_names});
         self.call(
@@ -293,12 +299,7 @@ impl NbuClient {
 
     /// Create (new id) or rename (existing id) a room — the endpoint is an
     /// upsert on `id`.
-    pub async fn upsert_room(
-        &self,
-        family_id: String,
-        id: String,
-        name: String,
-    ) -> Result<(), AppError> {
+    pub async fn upsert_room(&self, family_id: &str, id: &str, name: &str) -> Result<(), AppError> {
         let body = json!({"id": id, "name": name});
         self.call(
             Method::PUT,
@@ -310,7 +311,7 @@ impl NbuClient {
         Ok(())
     }
 
-    pub async fn delete_room(&self, family_id: String, room_id: String) -> Result<(), AppError> {
+    pub async fn delete_room(&self, family_id: &str, room_id: &str) -> Result<(), AppError> {
         self.call(
             Method::DELETE,
             &format!("/v1/families/{family_id}/rooms/{room_id}"),

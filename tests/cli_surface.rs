@@ -179,7 +179,10 @@ fn usage_error_exits_2_with_json_error_dto() {
 #[test]
 fn config_show_and_path_work_without_a_config_file() {
     let out = tplc().args(["--json", "config", "show"]).assert().success();
-    assert_eq!(json_stdout(&out), serde_json::json!({}));
+    assert_eq!(
+        json_stdout(&out),
+        serde_json::json!({"schema": "config/v1"})
+    );
     tplc()
         .args(["config", "path"])
         .assert()
@@ -193,6 +196,56 @@ fn config_show_and_path_work_without_a_config_file() {
         .assert()
         .success()
         .stdout(predicate::str::contains("/tmp/elsewhere.json"));
+}
+
+#[test]
+fn config_set_and_unset_emit_the_effective_config() {
+    let path = std::env::temp_dir().join(format!("tplc-config-test-{}.json", std::process::id()));
+    let path_s = path.to_str().unwrap().to_string();
+    let out = tplc()
+        .args([
+            "--config",
+            &path_s,
+            "--json",
+            "config",
+            "set",
+            "default_cloud",
+            "tapo",
+        ])
+        .assert()
+        .success();
+    assert_eq!(
+        json_stdout(&out),
+        serde_json::json!({"schema": "config/v1", "default_cloud": "tapo"})
+    );
+    tplc()
+        .args([
+            "--config",
+            &path_s,
+            "config",
+            "set",
+            "username",
+            "user@example.com",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("username: user@example.com"));
+    let out = tplc()
+        .args([
+            "--config",
+            &path_s,
+            "--json",
+            "config",
+            "unset",
+            "default_cloud",
+        ])
+        .assert()
+        .success();
+    assert_eq!(
+        json_stdout(&out),
+        serde_json::json!({"schema": "config/v1", "username": "user@example.com"})
+    );
+    std::fs::remove_file(path).ok();
 }
 
 #[test]

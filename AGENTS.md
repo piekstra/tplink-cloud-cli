@@ -30,10 +30,15 @@ Run `make verify` before considering a change done — it's exactly what CI runs
   the async runtime for everything that talks to a cloud; `info`.
 - `src/cli/mod.rs` — the clap tree. `src/cli/<group>.rs` — one handler
   module per command group (`auth`, `config`, `devices`, `power`, `energy`,
-  `light`, `schedule`, `info`, `rooms`, `groups`, `api`); `cli/emit.rs` holds
-  `Ctx` and the headed-list renderer.
+  `light`, `schedule`, `info`, `led`, `rooms`, `groups`, `api`); `cli/emit.rs`
+  holds `Ctx` and the headed-list renderer. `dispatch` in `lib.rs` only
+  translates and delegates — no command logic lives there.
 - `src/session.rs` — the keychain layout (one `session` item + a parked
-  `mfa_pending` item under `piekstra.tplc`), legacy migrations, token refresh.
+  `mfa_pending` item under `piekstra.tplc`), legacy migrations, token
+  refresh, and `with_refresh` (the one "call; on an expired token refresh
+  once and retry" policy every cloud call goes through). `Sessions` is
+  generic over a `SecretItems` seam so the migration order is unit-tested
+  against an in-memory store.
 - `src/api/client.rs` — the v2 account cloud: signing, regional URL, login,
   MFA, refresh, `getDeviceList`, method passthrough, `getAppServiceUrl`.
 - `src/api/device_client.rs` — device passthrough (Kasa vs Tapo envelopes).
@@ -57,6 +62,9 @@ Run `make verify` before considering a change done — it's exactly what CI runs
   network, so `--help` and bad input never prompt or hang.
 - **Secrets** come from the keychain (`piekstra.tplc`), `--stdin`,
   `--from-env`, or `$TPLC_PASSWORD` — never argv, never logs, never a file.
+  `-v` prints request bodies only through `api::client::redacted`, which
+  blanks `cloudPassword`, tokens and MFA codes; keep new verbose lines
+  behind it.
   The password is used once and dropped; only tokens are stored, as **one**
   keychain item (every extra item is a macOS prompt per rebuild).
 - **Room writes gate first, read back after.** `rooms move|create|rename|

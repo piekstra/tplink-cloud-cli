@@ -49,6 +49,9 @@ Conforms to [piekstra-cli spec v1](https://github.com/piekstra/cli-common)
 - `schedule add/edit` validate flags before resolving the device; `light`
   and `energy --month` ranges are enforced by clap.
 - `groups devices` / `rooms devices` omit `name` when unknown (never null).
+- `config show|set|unset` emit `config/v1` (the effective config).
+- `-v` never prints the password, tokens or MFA codes: request bodies are
+  redacted before logging (0.1 printed the login body verbatim).
 
 ### Keychain
 - Service renamed `tplc` → **`piekstra.tplc`**; the `session` and

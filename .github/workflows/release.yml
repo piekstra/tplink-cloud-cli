@@ -154,7 +154,6 @@ jobs:
             end
           end
           RUBY
-          sed -i 's/^          //' /tmp/tplc.rb
           CONTENT=$(base64 -w0 /tmp/tplc.rb)
           EXISTING_SHA=$(gh api repos/piekstra/homebrew-tap/contents/Formula/tplc.rb --jq '.sha' 2>/dev/null || echo "")
           if [ -n "$EXISTING_SHA" ]; then

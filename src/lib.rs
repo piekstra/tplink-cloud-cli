@@ -122,20 +122,7 @@ async fn dispatch(
         Command::Rooms(cmd) => cli::rooms::handle(ctx, cmd).await?,
         Command::Groups(cmd) => cli::groups::handle(ctx, cmd).await?,
         Command::Api(args) => cli::api::handle(ctx, args, api_params).await?,
-        Command::Led { state, device } => {
-            let dev = resolve::resolve_device(ctx, device).await?;
-            let on = matches!(state, cli::LedState::On);
-            dev.set_led_state(on).await?;
-            pk_cli_core::output::emit_one(
-                ctx.json,
-                "led-state",
-                serde_json::json!({
-                    "device": dev.alias(),
-                    "device_id": dev.device_id,
-                    "led": if on { "on" } else { "off" },
-                }),
-            );
-        }
+        Command::Led { state, device } => cli::led::handle(ctx, *state, device).await?,
         Command::Auth(AuthCmd::SetCredential(_))
         | Command::Config(_)
         | Command::SelfUpdate(_)

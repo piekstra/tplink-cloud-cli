@@ -9,6 +9,7 @@ pub mod emit;
 pub mod energy;
 pub mod groups;
 pub mod info;
+pub mod led;
 pub mod light;
 pub mod power;
 pub mod rooms;
