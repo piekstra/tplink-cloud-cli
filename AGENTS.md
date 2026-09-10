@@ -77,7 +77,9 @@ Run `make verify` before considering a change done — it's exactly what CI runs
   naming candidates, never a silent first pick. Devices, rooms, homes,
   things all use it.
 - **`device-rooms/v1` is a contract** (cli-common DESIGN.md §1.8): `id`,
-  `name`, `room`, `source` — omit `name` when unknown, never emit null.
+  `name`, `room`, `source` — omit `name` when unknown and `room` when the
+  vendor app files the device in no room; never emit null. The consumer
+  (`ghome audit --expect -`) reports a roomless row as `unfiled`.
 - `api` is an RPC-by-method passthrough, deliberately not the family's HTTP
   `api <VERB> <PATH>` form (there are no paths to expose).
 

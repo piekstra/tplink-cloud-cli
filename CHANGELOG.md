@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.1 — 2026-09-10
+
+- `rooms devices` rows now join with Google Home: one of Tapo's own devices
+  carries the MAC without separators as `id` (what Google's Tapo integration
+  reports as `partner_device_id`); a Kasa device shared into the Tapo app
+  keeps its Kasa id. Found by the first live `ghome audit` fed by Tapo rooms.
+- The Tapo cloud's base64-encoded aliases are decoded once, where the device
+  list enters the program, so `devices list`, name resolution and `rooms
+  devices` all show (and accept) the real name.
+- One of Tapo's own devices in no room keeps its `device-rooms/v1` row with
+  `room` omitted (smart-home/v1 now allows it), so `ghome audit` can report
+  the gap as `unfiled`. Roomless Kasa devices shared into Tapo stay out.
+
 ## 0.2.0 — 2026-09-10
 
 Conforms to [piekstra-cli spec v1](https://github.com/piekstra/cli-common)

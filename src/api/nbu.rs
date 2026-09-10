@@ -9,6 +9,7 @@
 //! Responses are bare JSON (no `error_code` envelope); errors are HTTP
 //! statuses with a `{"code", "message"}` body.
 
+use crate::models::device_info::decode_encoded_name;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, USER_AGENT};
 use reqwest::{Certificate, Method};
 use serde::{Deserialize, Serialize};
@@ -69,37 +70,43 @@ pub struct Thing {
     pub category: Option<String>,
     #[serde(default)]
     pub status: Option<i64>,
+    #[serde(default)]
+    pub mac: Option<String>,
 }
 
 impl Thing {
-    /// The user-facing name. Tapo firmware reports nicknames base64-encoded
-    /// and the cloud passes some through as-is, so a value that decodes to
-    /// clean UTF-8 text is taken as encoded; anything else is the name.
+    /// The id Google Home shows for this device (`partner_device_id`), so
+    /// `device-rooms/v1` rows join: Tapo's own integration reports the MAC
+    /// without separators, while Kasa devices shared into the Tapo app keep
+    /// their Kasa device id (the thing name).
+    pub fn google_id(&self) -> String {
+        match (&self.mac, self.is_native_tapo()) {
+            (Some(mac), true) if !mac.trim().is_empty() => mac
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric())
+                .collect::<String>()
+                .to_uppercase(),
+            _ => self.thing_name.clone(),
+        }
+    }
+
+    /// Whether this is one of Tapo's own devices rather than a Kasa device
+    /// shared into the Tapo app (`includeKasaShareDevices`).
+    pub fn is_native_tapo(&self) -> bool {
+        self.device_type
+            .as_deref()
+            .is_some_and(|t| t.to_uppercase().starts_with("SMART.TAPO"))
+    }
+
+    /// The user-facing name, decoded the way the account cloud's alias is
+    /// (`models::device_info::decode_encoded_name`).
     pub fn display_name(&self) -> Option<String> {
         let raw = self.nickname.as_deref()?.trim();
         if raw.is_empty() {
             return None;
         }
-        Some(decode_nickname(raw))
+        Some(decode_encoded_name(raw))
     }
-}
-
-pub fn decode_nickname(raw: &str) -> String {
-    use base64::Engine;
-    if raw.len() % 4 == 0
-        && raw
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/' || b == b'=')
-    {
-        if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(raw) {
-            if let Ok(s) = String::from_utf8(bytes) {
-                if !s.is_empty() && s.chars().all(|c| !c.is_control()) {
-                    return s;
-                }
-            }
-        }
-    }
-    raw.to_string()
 }
 
 /// A fresh room id the way the app makes one: 8 chars of `[A-Za-z0-9]`.
@@ -328,15 +335,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn nicknames_decode_when_base64_and_pass_through_otherwise() {
-        assert_eq!(decode_nickname("T2ZmaWNlIExhbXA="), "Office Lamp");
-        assert_eq!(decode_nickname("Office Lamp"), "Office Lamp");
-        // 4-char words are base64-shaped but decode to junk: kept verbatim.
-        assert_eq!(decode_nickname("Lamp"), "Lamp");
-        assert_eq!(decode_nickname("Desk"), "Desk");
-    }
-
-    #[test]
     fn room_ids_are_eight_alphanumerics() {
         let id = new_room_id();
         assert_eq!(id.len(), 8);
@@ -361,5 +359,40 @@ mod tests {
         assert_eq!(t.display_name().as_deref(), Some("Office Lamp"));
         let bare: Thing = serde_json::from_value(json!({"thingName": "x"})).unwrap();
         assert!(bare.room_id.is_none() && bare.display_name().is_none());
+    }
+}
+
+#[cfg(test)]
+mod google_id_tests {
+    use super::*;
+
+    fn thing(name: &str, kind: &str, mac: Option<&str>) -> Thing {
+        Thing {
+            thing_name: name.into(),
+            family_id: None,
+            room_id: None,
+            nickname: None,
+            device_model: None,
+            device_type: Some(kind.into()),
+            category: None,
+            status: None,
+            mac: mac.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn tapo_devices_join_on_mac_and_kasa_devices_on_their_id() {
+        assert_eq!(
+            thing("abc123", "SMART.TAPOLOCK", Some("10:5a:95:2f:ad:17")).google_id(),
+            "105A952FAD17"
+        );
+        assert_eq!(
+            thing("8006ABCD", "SMART.KASAPLUG", Some("00:11:22:33:44:55")).google_id(),
+            "8006ABCD"
+        );
+        assert_eq!(
+            thing("abc123", "SMART.TAPOPLUG", None).google_id(),
+            "abc123"
+        );
     }
 }

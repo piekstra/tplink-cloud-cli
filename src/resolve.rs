@@ -111,10 +111,9 @@ async fn fetch_cloud(
 
     let mut devices = Vec::new();
     for device_json in &device_list {
-        let Some(mut info) = DeviceInfo::from_json(device_json) else {
+        let Some(info) = DeviceInfo::from_cloud(device_json, cloud) else {
             continue;
         };
-        info.cloud_type = Some(cloud);
         let dtype = DeviceType::from_model(info.model());
         devices.push(Listed {
             info: info.clone(),

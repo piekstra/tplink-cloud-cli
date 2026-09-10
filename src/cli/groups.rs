@@ -106,14 +106,18 @@ async fn iot_call(
 }
 
 /// One `device-rooms/v1` item. `name` is a required string in that
-/// contract, so an unknown name is omitted rather than emitted as null.
-pub fn device_room_row(id: &str, name: Option<String>, room: &str) -> Value {
+/// contract, so an unknown name is omitted rather than emitted as null;
+/// `room` is omitted (never null) when the vendor app files the device in
+/// no room, so a consumer can report the gap.
+pub fn device_room_row(id: &str, name: Option<String>, room: Option<&str>) -> Value {
     let mut row = Map::new();
     row.insert("id".into(), json!(id));
     if let Some(n) = name {
         row.insert("name".into(), json!(n));
     }
-    row.insert("room".into(), json!(room));
+    if let Some(r) = room {
+        row.insert("room".into(), json!(r));
+    }
     row.insert("source".into(), json!("tplink"));
     Value::Object(row)
 }
@@ -184,7 +188,7 @@ pub async fn handle(ctx: &Ctx<'_>, cmd: &GroupsCommand) -> Result<(), CliError> 
                     .flatten()
                 {
                     if let Some(id) = it.get("id").and_then(Value::as_str) {
-                        items.push(device_room_row(id, name_of(id), room));
+                        items.push(device_room_row(id, name_of(id), Some(room)));
                     }
                 }
             }
@@ -202,10 +206,16 @@ mod tests {
 
     #[test]
     fn device_room_rows_omit_an_unknown_name() {
-        let named = device_room_row("d1", Some("Lamp".into()), "Office");
+        let named = device_room_row("d1", Some("Lamp".into()), Some("Office"));
         assert_eq!(named["name"], "Lamp");
-        let anon = device_room_row("d2", None, "Office");
+        assert_eq!(named["room"], "Office");
+        let anon = device_room_row("d2", None, Some("Office"));
         assert!(anon.get("name").is_none(), "name must be absent, not null");
+        let unfiled = device_room_row("d3", Some("Bulb".into()), None);
+        assert!(
+            unfiled.get("room").is_none(),
+            "room must be absent, not null"
+        );
         assert_eq!(anon["source"], "tplink");
     }
 
