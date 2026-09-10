@@ -9,6 +9,7 @@
 //! Responses are bare JSON (no `error_code` envelope); errors are HTTP
 //! statuses with a `{"code", "message"}` body.
 
+use crate::models::device_info::decode_encoded_name;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, USER_AGENT};
 use reqwest::{Certificate, Method};
 use serde::{Deserialize, Serialize};
@@ -79,11 +80,7 @@ impl Thing {
     /// without separators, while Kasa devices shared into the Tapo app keep
     /// their Kasa device id (the thing name).
     pub fn google_id(&self) -> String {
-        let is_tapo = self
-            .device_type
-            .as_deref()
-            .is_some_and(|t| t.to_uppercase().starts_with("SMART.TAPO"));
-        match (&self.mac, is_tapo) {
+        match (&self.mac, self.is_native_tapo()) {
             (Some(mac), true) if !mac.trim().is_empty() => mac
                 .chars()
                 .filter(|c| c.is_ascii_alphanumeric())
@@ -93,34 +90,23 @@ impl Thing {
         }
     }
 
-    /// The user-facing name. Tapo firmware reports nicknames base64-encoded
-    /// and the cloud passes some through as-is, so a value that decodes to
-    /// clean UTF-8 text is taken as encoded; anything else is the name.
+    /// Whether this is one of Tapo's own devices rather than a Kasa device
+    /// shared into the Tapo app (`includeKasaShareDevices`).
+    pub fn is_native_tapo(&self) -> bool {
+        self.device_type
+            .as_deref()
+            .is_some_and(|t| t.to_uppercase().starts_with("SMART.TAPO"))
+    }
+
+    /// The user-facing name, decoded the way the account cloud's alias is
+    /// (`models::device_info::decode_encoded_name`).
     pub fn display_name(&self) -> Option<String> {
         let raw = self.nickname.as_deref()?.trim();
         if raw.is_empty() {
             return None;
         }
-        Some(decode_nickname(raw))
+        Some(decode_encoded_name(raw))
     }
-}
-
-pub fn decode_nickname(raw: &str) -> String {
-    use base64::Engine;
-    if raw.len() % 4 == 0
-        && raw
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/' || b == b'=')
-    {
-        if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(raw) {
-            if let Ok(s) = String::from_utf8(bytes) {
-                if !s.is_empty() && s.chars().all(|c| !c.is_control()) {
-                    return s;
-                }
-            }
-        }
-    }
-    raw.to_string()
 }
 
 /// A fresh room id the way the app makes one: 8 chars of `[A-Za-z0-9]`.
@@ -350,11 +336,11 @@ mod tests {
 
     #[test]
     fn nicknames_decode_when_base64_and_pass_through_otherwise() {
-        assert_eq!(decode_nickname("T2ZmaWNlIExhbXA="), "Office Lamp");
-        assert_eq!(decode_nickname("Office Lamp"), "Office Lamp");
+        assert_eq!(decode_encoded_name("T2ZmaWNlIExhbXA="), "Office Lamp");
+        assert_eq!(decode_encoded_name("Office Lamp"), "Office Lamp");
         // 4-char words are base64-shaped but decode to junk: kept verbatim.
-        assert_eq!(decode_nickname("Lamp"), "Lamp");
-        assert_eq!(decode_nickname("Desk"), "Desk");
+        assert_eq!(decode_encoded_name("Lamp"), "Lamp");
+        assert_eq!(decode_encoded_name("Desk"), "Desk");
     }
 
     #[test]
@@ -417,6 +403,9 @@ mod google_id_tests {
             thing("abc123", "SMART.TAPOPLUG", None).google_id(),
             "abc123"
         );
-        assert_eq!(decode_nickname("RnJvbnQgRG9vciBMb2Nr"), "Front Door Lock");
+        assert_eq!(
+            decode_encoded_name("RnJvbnQgRG9vciBMb2Nr"),
+            "Front Door Lock"
+        );
     }
 }

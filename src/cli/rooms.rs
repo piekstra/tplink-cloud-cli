@@ -43,8 +43,9 @@ pub enum RoomsCommand {
     /// Rooms with their device counts (room-list/v1).
     #[command(visible_alias = "ls")]
     List(HomeArg),
-    /// Every device that is in a room, as `device-rooms/v1` for
-    /// `ghome audit --expect -` (pass --json when piping).
+    /// Every device with its room, as `device-rooms/v1` for
+    /// `ghome audit --expect -` (pass --json when piping). A Tapo device in
+    /// no room keeps its row without `room`.
     Devices(HomeArg),
     /// Put a device in a room (prompts; --force to skip).
     Move {
@@ -388,6 +389,43 @@ pub fn room_gone(families: &[Family], room_id: &str) -> bool {
         .any(|r| r.id == room_id)
 }
 
+/// The `device-rooms/v1` rows for `homes`: one per thing filed in one of
+/// their rooms, with the id Google Home joins on (`Thing::google_id`) and
+/// the account cloud's alias over the Tapo nickname. One of Tapo's own
+/// devices in no room keeps a row without `room`, so a consumer can report
+/// the gap; a Kasa device shared into the Tapo app is the Kasa app's to
+/// file (`groups devices`), so roomless it is left out.
+pub fn device_room_rows(
+    things: &[Thing],
+    homes: &[&Family],
+    alias_of: impl Fn(&str) -> Option<String>,
+) -> Vec<Value> {
+    let rooms = rooms_of(homes);
+    things
+        .iter()
+        .filter_map(|t| {
+            let room = match t.room_id.as_deref() {
+                Some(rid) => Some(rooms.iter().find(|r| r.room.id == rid)?),
+                None => None,
+            };
+            let in_scope = room.is_some()
+                || (t.is_native_tapo()
+                    && t.family_id
+                        .as_deref()
+                        .is_none_or(|fid| homes.iter().any(|h| h.id == fid)));
+            if !in_scope {
+                return None;
+            }
+            let name = alias_of(&t.thing_name).or_else(|| t.display_name());
+            Some(device_room_row(
+                &t.google_id(),
+                name,
+                room.map(|r| r.room.name.as_str()),
+            ))
+        })
+        .collect()
+}
+
 fn count_in(things: &[Thing], room_id: &str) -> usize {
     things
         .iter()
@@ -432,9 +470,9 @@ pub async fn handle(ctx: &Ctx<'_>, cmd: &RoomsCommand) -> Result<(), CliError> {
             let families = tapo.families().await?;
             let things = tapo.things().await?;
             let homes = select_homes(&families, home.as_deref())?;
-            let rooms = rooms_of(&homes);
             // Names come from the account cloud's device list (the alias the
-            // user knows), falling back to the Tapo nickname.
+            // user knows, decoded at that boundary), falling back to the
+            // Tapo nickname.
             let (devices, _) = resolve::fetch_all_devices_with(ctx, false).await?;
             let alias_of = |id: &str| {
                 devices
@@ -442,18 +480,7 @@ pub async fn handle(ctx: &Ctx<'_>, cmd: &RoomsCommand) -> Result<(), CliError> {
                     .find(|d| d.child_id.is_none() && d.info.id() == id)
                     .map(|d| d.name().to_string())
             };
-            let items = things
-                .iter()
-                .filter_map(|t| {
-                    let room_id = t.room_id.as_deref()?;
-                    let room = rooms.iter().find(|r| r.room.id == room_id)?;
-                    // The account cloud hands Tapo aliases through base64 too.
-                    let name = alias_of(&t.thing_name)
-                        .map(|n| crate::api::nbu::decode_nickname(&n))
-                        .or_else(|| t.display_name());
-                    Some(device_room_row(&t.google_id(), name, &room.room.name))
-                })
-                .collect();
+            let items = device_room_rows(&things, &homes, alias_of);
             emit_list(ctx.json, "device-rooms", items, &["name", "room", "id"]);
             Ok(())
         }
@@ -761,6 +788,43 @@ mod tests {
 
         assert!(room_gone(&families, "ROOM0009"));
         assert!(!room_gone(&families, "ROOM0001"), "delete not applied");
+    }
+
+    #[test]
+    fn device_rows_join_on_googles_id_and_prefer_the_account_alias() {
+        let families = fixture_families();
+        let things = fixture_things();
+        let homes: Vec<&Family> = families.iter().collect();
+        let alias = |id: &str| {
+            (id == "0000000000000000000000000000000000000001").then(|| "Desk Light".to_string())
+        };
+        let rows = device_room_rows(&things, &homes, alias);
+        assert_eq!(rows.len(), 3, "{rows:?}");
+        // A Kasa device shared into Tapo: its Kasa id, the account alias over the nickname.
+        assert_eq!(rows[0]["id"], "0000000000000000000000000000000000000001");
+        assert_eq!(rows[0]["name"], "Desk Light");
+        assert_eq!(rows[0]["room"], "Office");
+        // Tapo's own device: the MAC without separators, the decoded nickname.
+        assert_eq!(rows[1]["id"], "000000000002");
+        assert_eq!(rows[1]["name"], "Kitchen Tapo Plug");
+        // Tapo's own device in no room: the row stays, `room` is absent.
+        assert_eq!(rows[2]["id"], "000000000003");
+        assert_eq!(rows[2]["name"], "Living Room Tapo Bulb");
+        assert!(rows[2].get("room").is_none(), "{:?}", rows[2]);
+        // Scoped to a home none of them are in: nothing.
+        let elsewhere: Family = serde_json::from_value(
+            json!({"id": "FAM00009", "name": "Elsewhere", "default": false, "rooms": []}),
+        )
+        .unwrap();
+        assert!(device_room_rows(&things, &[&elsewhere], |_| None).is_empty());
+        // A roomless Kasa device shared into Tapo is the Kasa app's to file.
+        let loose: Thing = serde_json::from_value(json!({
+            "thingName": "0000000000000000000000000000000000000009", "familyId": "FAM00001",
+            "roomId": null, "nickname": "Garage Plug", "deviceType": "SMART.KASAPLUG",
+            "mac": "00:00:00:00:00:09"
+        }))
+        .unwrap();
+        assert!(device_room_rows(&[loose], &homes, |_| None).is_empty());
     }
 
     #[test]

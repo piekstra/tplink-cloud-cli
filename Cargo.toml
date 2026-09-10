@@ -1,6 +1,6 @@
 [package]
 name = "tplink-cloud-cli"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 rust-version = "1.85"
 description = "TP-Link Kasa and Tapo smart-home devices from the terminal, over the TP-Link cloud API. Keychain-secured, agent-friendly."

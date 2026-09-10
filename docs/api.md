@@ -219,7 +219,7 @@ Paged endpoints take `page` (0-based) and `pageSize` and answer
 | | method | path | body / notes |
 |---|---|---|---|
 | homes + rooms | GET | `/v1/families?page=0&pageSize=20` | `data[]: {id, name, default, rooms: [{id, name, avatarUrl}]}` |
-| devices with rooms | GET | `/v2/things?page=0&pageSize=20&includePcDevice=true&includeKasaShareDevices=true&includeMatterDevice=true&includeExternalVendorDeviceInfo=true` | `data[]: ThingInfo {thingName (= deviceId), familyId, roomId, nickname, deviceModel, deviceType, category, status, …}`; `roomId: null` = unassigned. Omitting `deviceTypes` returns everything (*inferred*) |
+| devices with rooms | GET | `/v2/things?page=0&pageSize=20&includePcDevice=true&includeKasaShareDevices=true&includeMatterDevice=true&includeExternalVendorDeviceInfo=true` | `data[]: ThingInfo {thingName (= deviceId), familyId, roomId, nickname, deviceModel, deviceType, category, status, mac, …}`; `roomId: null` = unassigned. Omitting `deviceTypes` returns everything (*inferred*) |
 | move device(s) | POST | `/v1/families/thing-settings` | `{"familyId", "roomId", "thingNames": ["<deviceId>", …]}` → empty 2xx |
 | create / rename room | PUT | `/v1/families/{familyId}/rooms` | `{"id": "<8 chars [A-Za-z0-9]>", "name"}` — an upsert on `id`: a new id creates, an existing one renames (*upsert inferred from the app's two call sites*) → `{id, name, avatarUrl}` |
 | delete room | DELETE | `/v1/families/{familyId}/rooms/{roomId}` | empty |
@@ -232,11 +232,30 @@ the cloud passes some through as-is. `Thing::display_name` decodes a value
 that is valid base64 of clean text and keeps anything else verbatim. `tplc
 rooms devices` prefers the account cloud's `alias` for the same `deviceId`.
 
+**Trap — the account cloud is encoded too.** The Tapo cloud's v2
+`getDeviceList` hands `alias` through base64 as well
+(`RnJvbnQgRG9vciBMb2Nr`), while Kasa's is as typed. `DeviceInfo::from_cloud`
+decodes it once, where the list enters the program, so `devices list`, name
+resolution and `rooms devices` all see the real name; decode nowhere else.
+
+**Trap — Google's id is the MAC.** Google Home's Tapo integration reports
+`partner_device_id` as the MAC without separators, not `thingName`, so a
+`device-rooms/v1` row keyed on `thingName` silently matches nothing for a
+Tapo device (the Kasa integration does use the Kasa device id). Found by a
+live `ghome audit`, not by reading the wire shapes.
+
 ### What `tplc rooms` does with them
 
 - `rooms list`: `/v1/families` + `/v2/things` (for counts).
 - `rooms devices`: the join `things.roomId → families[].rooms[]`, emitted as
-  `device-rooms/v1` with `id = thingName`.
+  `device-rooms/v1`. `id` is what Google Home's `partner_device_id` shows
+  for the device: for one of Tapo's own devices the **MAC without
+  separators, upper-case** (`mac` → `105A952FAD17`); for a Kasa device
+  shared into the Tapo app its Kasa device id (`thingName`). `name` is the
+  account cloud's alias over the decoded `nickname`. One of Tapo's own
+  devices in no room keeps its row with `room` omitted (smart-home/v1
+  allows it, and `ghome audit` reports it as `unfiled`); a roomless
+  Kasa-shared device is left out, `groups devices` being its home.
 - `rooms move`: gate → resolve the thing and the room (in the thing's own
   home unless `--home`) → confirm → `thing-settings` → **re-read
   `/v2/things`** and require `roomId` to match.
