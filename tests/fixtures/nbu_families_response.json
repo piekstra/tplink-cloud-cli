@@ -1,0 +1,29 @@
+{
+  "page": 0,
+  "pageSize": 20,
+  "total": 1,
+  "data": [
+    {
+      "id": "FAM00001",
+      "name": "Home",
+      "default": true,
+      "rooms": [
+        {
+          "id": "ROOM0001",
+          "name": "Living Room",
+          "avatarUrl": ""
+        },
+        {
+          "id": "ROOM0002",
+          "name": "Office",
+          "avatarUrl": ""
+        },
+        {
+          "id": "ROOM0003",
+          "name": "Kitchen",
+          "avatarUrl": null
+        }
+      ]
+    }
+  ]
+}

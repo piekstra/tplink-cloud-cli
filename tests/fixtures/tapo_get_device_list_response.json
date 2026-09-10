@@ -1,0 +1,61 @@
+{
+  "error_code": 0,
+  "result": {
+    "deviceList": [
+      {
+        "deviceType": "SMART.TAPOPLUG",
+        "role": 0,
+        "fwVer": "1.3.0 Build 230425 Rel.163532",
+        "appServerUrl": "http://127.0.0.1:8080",
+        "deviceRegion": "us-east-1",
+        "deviceId": "0000000000000000000000000000000000000010",
+        "deviceName": "Tapo Mini Smart Wi-Fi Plug",
+        "deviceHwVer": "1.0",
+        "alias": "Kitchen Tapo Plug",
+        "deviceMac": "000000000010",
+        "oemId": "00000000000000000000000000000000",
+        "deviceModel": "P100",
+        "hwId": "00000000000000000000000000000000",
+        "fwId": "00000000000000000000000000000000",
+        "isSameRegion": true,
+        "status": 1
+      },
+      {
+        "deviceType": "SMART.TAPOPLUG",
+        "role": 0,
+        "fwVer": "1.2.1 Build 230425 Rel.163532",
+        "appServerUrl": "http://127.0.0.1:8080",
+        "deviceRegion": "us-east-1",
+        "deviceId": "0000000000000000000000000000000000000011",
+        "deviceName": "Tapo Mini Smart Wi-Fi Plug with Energy Monitoring",
+        "deviceHwVer": "1.0",
+        "alias": "Office Tapo Energy Plug",
+        "deviceMac": "000000000011",
+        "oemId": "00000000000000000000000000000000",
+        "deviceModel": "P110",
+        "hwId": "00000000000000000000000000000000",
+        "fwId": "00000000000000000000000000000000",
+        "isSameRegion": true,
+        "status": 1
+      },
+      {
+        "deviceType": "SMART.TAPOBULB",
+        "role": 0,
+        "fwVer": "1.1.0 Build 230602 Rel.145203",
+        "appServerUrl": "http://127.0.0.1:8080",
+        "deviceRegion": "us-east-1",
+        "deviceId": "0000000000000000000000000000000000000012",
+        "deviceName": "Tapo Smart Wi-Fi Light Bulb, Multicolor",
+        "deviceHwVer": "2.0",
+        "alias": "Living Room Tapo Bulb",
+        "deviceMac": "000000000012",
+        "oemId": "00000000000000000000000000000000",
+        "deviceModel": "L530",
+        "hwId": "00000000000000000000000000000000",
+        "fwId": "00000000000000000000000000000000",
+        "isSameRegion": true,
+        "status": 1
+      }
+    ]
+  }
+}

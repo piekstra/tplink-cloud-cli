@@ -1,0 +1,9 @@
+{
+  "error_code": 0,
+  "result": {
+    "regionCode": "us",
+    "serviceUrls": {
+      "nbu.iot-app-server.app-v2": "https://use1-app-server.iot.i.tplinknbu.com"
+    }
+  }
+}
