@@ -1,0 +1,11 @@
+{
+  "error_code": 0,
+  "result": {
+    "accountId": "000000",
+    "regTime": "2017-11-27 23:21:40",
+    "countryCode": "US",
+    "email": "user@example.com",
+    "token": "kasa-token-dummy",
+    "refreshToken": "kasa-refresh-dummy"
+  }
+}

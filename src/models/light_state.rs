@@ -2,11 +2,17 @@ use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct LightState {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub on_off: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub hue: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub saturation: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub color_temp: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub brightness: Option<u8>,
 }
 

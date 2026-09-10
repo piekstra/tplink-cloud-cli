@@ -1,69 +1,57 @@
 [package]
-name = "tplc"
-version = "0.1.0"
+name = "tplink-cloud-cli"
+version = "0.2.0"
 edition = "2021"
-description = "CLI for TP-Link Cloud API - control Kasa and Tapo smart home devices"
+rust-version = "1.85"
+description = "TP-Link Kasa and Tapo smart-home devices from the terminal, over the TP-Link cloud API. Keychain-secured, agent-friendly."
 license = "GPL-3.0"
 repository = "https://github.com/piekstra/tplink-cloud-cli"
+homepage = "https://github.com/piekstra/tplink-cloud-cli"
 readme = "README.md"
+keywords = ["tplink", "kasa", "tapo", "smart-home", "cli"]
+categories = ["command-line-utilities"]
+
+[lib]
+name = "tplc"
+path = "src/lib.rs"
 
 [[bin]]
 name = "tplc"
 path = "src/main.rs"
 
 [dependencies]
-# CLI
 clap = { version = "4", features = ["derive", "env"] }
-
-# Async
-tokio = { version = "1", features = ["full"] }
-
-# HTTP
-reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
-
-# Serialization
+clap_complete = "4"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
+pk-cli-core = { git = "https://github.com/piekstra/cli-common", tag = "v0.8.0", features = ["reqwest"] }
+pk-cli-secrets = { git = "https://github.com/piekstra/cli-common", tag = "v0.8.0" }
+pk-cli-config = { git = "https://github.com/piekstra/cli-common", tag = "v0.8.0" }
+pk-cli-selfupdate = { git = "https://github.com/piekstra/cli-common", tag = "v0.8.0" }
+pk-cli-auth = { git = "https://github.com/piekstra/cli-common", tag = "v0.8.0" }
 
-# Crypto (signing)
+# The vendor client is async: the cloud round-trips fan out over two clouds
+# and a passthrough per device. A runtime is built per invocation only for
+# the commands that need it, so the shared blocking crates (self-update)
+# never run inside one.
+tokio = { version = "1", features = ["rt", "net", "time"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# V2 cloud request signing (HMAC-SHA1 over an MD5 body digest).
 hmac = "0.12"
 sha1 = "0.10"
 md-5 = "0.10"
 base64 = "0.22"
 hex = "0.4"
-
-# UUID
 uuid = { version = "1", features = ["v4"] }
-
-# Auth storage
-keyring = "3"
-
-# Output
-tabled = "0.17"
-
-# Interactive
-dialoguer = "0.11"
-
-# Paths
-dirs = "6"
-
-# Errors
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 thiserror = "2"
 
-# Time
-chrono = { version = "0.4", features = ["serde"] }
-
-[target.'cfg(target_os = "macos")'.dependencies]
-keyring = { version = "3", features = ["apple-native"] }
-
-[target.'cfg(target_os = "windows")'.dependencies]
-keyring = { version = "3", features = ["windows-native"] }
-
-[target.'cfg(target_os = "linux")'.dependencies]
-keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
-
 [dev-dependencies]
-wiremock = "0.6"
 assert_cmd = "2"
 predicates = "3"
-tempfile = "3"
+
+[profile.release]
+strip = true
+lto = true
+opt-level = "z"

@@ -1,171 +1,151 @@
-name: Test & Release
+name: Release
+
+# Automatic releases. On every push to `main`, if the version in Cargo.toml has
+# no matching `v<version>` git tag yet, this builds per-platform binaries and
+# publishes a release (creating the tag at the merge commit). So cutting a
+# release is just: bump `version` in Cargo.toml and merge — no manual tagging.
+# Can also be run by hand from the Actions tab (workflow_dispatch).
+#
+# Assets are `tplc-<target>.tar.gz` (+ `.sha256`), exactly the name
+# `tplc self-update` looks for on the latest release. aarch64 Linux is
+# intentionally omitted: the secret-service keyring backend links libdbus,
+# awkward to cross-compile.
 
 on:
   push:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
   check:
+    name: check version
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      release: ${{ steps.v.outputs.release }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
-      - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
-      - run: cargo fmt --check
-      - run: cargo clippy -- -D warnings
-      - run: cargo test --verbose
+          fetch-depth: 0 # need tags to tell whether this version already shipped
+      - id: v
+        run: |
+          version=$(sed -nE 's/^version = "(.*)"/\1/p' Cargo.toml | head -1)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if git tag -l "v$version" | grep -q .; then
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "v$version already released — nothing to do." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "release=true" >> "$GITHUB_OUTPUT"
+            echo "Releasing v$version." >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   build:
+    name: build ${{ matrix.target }}
     needs: check
+    if: needs.check.outputs.release == 'true'
+    runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         include:
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-            artifact: tplc-linux-x86_64
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
-            artifact: tplc-linux-aarch64
-          - target: x86_64-apple-darwin
-            os: macos-latest
-            artifact: tplc-macos-x86_64
           - target: aarch64-apple-darwin
             os: macos-latest
-            artifact: tplc-macos-aarch64
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
-            artifact: tplc-windows-x86_64.exe
-    runs-on: ${{ matrix.os }}
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-
-      - name: Install system dependencies (Linux)
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: linux deps
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update
+          # Ubuntu mirrors fail index downloads now and then; retry before giving up.
+          for i in 1 2 3; do sudo apt-get update && break; sleep 15; done
           sudo apt-get install -y libdbus-1-dev pkg-config
-          if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-gnu" ]]; then
-            sudo dpkg --add-architecture arm64
-            # arm64 packages live on ports.ubuntu.com, not the default amd64 mirrors.
-            # Pin existing sources to amd64-only, then add ports for arm64.
-            # Lines without brackets: deb http... -> deb [arch=amd64] http...
-            # Lines with brackets: deb [opts] -> deb [arch=amd64,opts]
-            for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.list; do
-              [ -f "$f" ] || continue
-              sudo sed -i -e 's/^deb \(http\)/deb [arch=amd64] \1/' -e 's/^deb \[/deb [arch=amd64,/' "$f"
-            done
-            sudo sed -i '/^Architectures:/d; /^Types:/a Architectures: amd64' /etc/apt/sources.list.d/*.sources 2>/dev/null || true
-            printf 'deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble main universe\ndeb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble-updates main universe\ndeb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble-security main universe\n' | sudo tee /etc/apt/sources.list.d/arm64-cross.list
-            sudo apt-get update
-            sudo apt-get install -y gcc-aarch64-linux-gnu libdbus-1-dev:arm64
-            echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
-            echo "PKG_CONFIG_SYSROOT_DIR=/usr/aarch64-linux-gnu" >> $GITHUB_ENV
-          fi
-
-      - run: cargo build --release --target ${{ matrix.target }}
-
-      - name: Rename binary
-        shell: bash
+      - name: build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: package
         run: |
-          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-            cp target/${{ matrix.target }}/release/tplc.exe ${{ matrix.artifact }}
-          else
-            cp target/${{ matrix.target }}/release/tplc ${{ matrix.artifact }}
-          fi
-
+          tar -czf "tplc-${{ matrix.target }}.tar.gz" -C "target/${{ matrix.target }}/release" tplc
+          shasum -a 256 "tplc-${{ matrix.target }}.tar.gz" > "tplc-${{ matrix.target }}.tar.gz.sha256"
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
-          path: ${{ matrix.artifact }}
+          name: tplc-${{ matrix.target }}
+          path: tplc-${{ matrix.target }}.tar.gz*
 
   release:
-    needs: build
-    runs-on: macos-latest
+    name: publish release
+    needs: [check, build]
+    if: needs.check.outputs.release == 'true'
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          fetch-depth: 0
-
       - uses: actions/download-artifact@v4
         with:
+          path: dist
           merge-multiple: true
+      - name: publish
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.check.outputs.version }}
+          files: dist/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
 
-      - name: Determine version
-        id: bump
-        run: |
-          BASE_VERSION=$(cat version.txt | tr -d '\n')
-          VERSION="${BASE_VERSION}.${GITHUB_RUN_NUMBER}"
-          ./scripts/bump-version.sh "$VERSION"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-
-      - name: Create release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          git tag "v${{ steps.bump.outputs.version }}"
-          git push origin "v${{ steps.bump.outputs.version }}"
-          gh release create "v${{ steps.bump.outputs.version }}" \
-            tplc-* \
-            --title "v${{ steps.bump.outputs.version }}" \
-            --generate-notes
-
-      - name: Update Homebrew formula
+  # Keep `brew install piekstra/tap/tplc` working: point the formula at the
+  # new tarballs. Skipped (not failed) when the tap token isn't configured.
+  homebrew:
+    name: update homebrew tap
+    needs: [check, release]
+    if: needs.check.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: update formula
         env:
           GH_TOKEN: ${{ secrets.TAP_TOKEN }}
+          VERSION: ${{ needs.check.outputs.version }}
         run: |
           if [ -z "$GH_TOKEN" ]; then
             echo "TAP_TOKEN secret not set, skipping Homebrew update"
             exit 0
           fi
-
-          SHA256_MACOS_ARM=$(shasum -a 256 tplc-macos-aarch64 | awk '{print $1}')
-          SHA256_MACOS_X86=$(shasum -a 256 tplc-macos-x86_64 | awk '{print $1}')
-          SHA256_LINUX_X86=$(shasum -a 256 tplc-linux-x86_64 | awk '{print $1}')
-          SHA256_LINUX_ARM=$(shasum -a 256 tplc-linux-aarch64 | awk '{print $1}')
-          VERSION="${{ steps.bump.outputs.version }}"
+          sha() { awk '{print $1}' "dist/tplc-$1.tar.gz.sha256"; }
           BASE_URL="https://github.com/piekstra/tplink-cloud-cli/releases/download/v${VERSION}"
-
           cat > /tmp/tplc.rb <<RUBY
           class Tplc < Formula
-            desc "CLI for TP-Link Cloud API - control Kasa and Tapo smart home devices"
+            desc "TP-Link Kasa and Tapo smart-home devices from the terminal"
             homepage "https://github.com/piekstra/tplink-cloud-cli"
             license "GPL-3.0"
             version "${VERSION}"
 
             on_macos do
               if Hardware::CPU.arm?
-                url "${BASE_URL}/tplc-macos-aarch64"
-                sha256 "${SHA256_MACOS_ARM}"
+                url "${BASE_URL}/tplc-aarch64-apple-darwin.tar.gz"
+                sha256 "$(sha aarch64-apple-darwin)"
               else
-                url "${BASE_URL}/tplc-macos-x86_64"
-                sha256 "${SHA256_MACOS_X86}"
+                url "${BASE_URL}/tplc-x86_64-apple-darwin.tar.gz"
+                sha256 "$(sha x86_64-apple-darwin)"
               end
             end
 
             on_linux do
-              if Hardware::CPU.arm?
-                url "${BASE_URL}/tplc-linux-aarch64"
-                sha256 "${SHA256_LINUX_ARM}"
-              else
-                url "${BASE_URL}/tplc-linux-x86_64"
-                sha256 "${SHA256_LINUX_X86}"
-              end
+              url "${BASE_URL}/tplc-x86_64-unknown-linux-gnu.tar.gz"
+              sha256 "$(sha x86_64-unknown-linux-gnu)"
             end
 
             def install
-              binary = Dir["tplc-*"].first || "tplc"
-              mv binary, "tplc"
               bin.install "tplc"
             end
 
@@ -174,22 +154,12 @@ jobs:
             end
           end
           RUBY
-
-          # Strip leading whitespace from heredoc
-          sed -i '' 's/^          //' /tmp/tplc.rb
-
-          CONTENT=$(base64 -i /tmp/tplc.rb)
+          CONTENT=$(base64 -w0 /tmp/tplc.rb)
           EXISTING_SHA=$(gh api repos/piekstra/homebrew-tap/contents/Formula/tplc.rb --jq '.sha' 2>/dev/null || echo "")
-
           if [ -n "$EXISTING_SHA" ]; then
-            gh api repos/piekstra/homebrew-tap/contents/Formula/tplc.rb \
-              -X PUT \
-              -f message="Update tplc to v${VERSION}" \
-              -f content="${CONTENT}" \
-              -f sha="${EXISTING_SHA}"
+            gh api repos/piekstra/homebrew-tap/contents/Formula/tplc.rb -X PUT \
+              -f message="Update tplc to v${VERSION}" -f content="${CONTENT}" -f sha="${EXISTING_SHA}"
           else
-            gh api repos/piekstra/homebrew-tap/contents/Formula/tplc.rb \
-              -X PUT \
-              -f message="Add tplc v${VERSION}" \
-              -f content="${CONTENT}"
+            gh api repos/piekstra/homebrew-tap/contents/Formula/tplc.rb -X PUT \
+              -f message="Add tplc v${VERSION}" -f content="${CONTENT}"
           fi

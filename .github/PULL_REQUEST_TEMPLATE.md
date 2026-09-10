@@ -1,21 +1,19 @@
 ## Summary
 
-<!-- Brief description of what this PR does -->
+<!-- What this PR does, and why -->
 
 ## Changes
 
-<!-- List the key changes made -->
+<!-- The key changes -->
 
 ## Test plan
 
-<!-- How did you verify this works? -->
-- [ ] Ran `cargo test` locally
-- [ ] Ran `cargo clippy -- -D warnings`
-- [ ] Ran `cargo fmt --check`
-- [ ] Tested with a real TP-Link device (if applicable)
+- [ ] `make verify` green (fmt + clippy `-D warnings` + offline tests + smoke)
+- [ ] `--json` and text output in sync for any touched command
+- [ ] Dogfooded through the installed binary against a real device (if applicable)
 
 ## Checklist
 
-- [ ] Code follows existing patterns in the codebase
-- [ ] Added/updated tests for new functionality (if applicable)
-- [ ] README updated (if applicable)
+- [ ] No secrets or personal data in the diff (fixtures use dummies; see `tests/fixtures/README.md`)
+- [ ] `docs/api.md` updated for any new endpoint, shape, or trap
+- [ ] README / CHANGELOG updated (if user-visible)

@@ -14,8 +14,43 @@ const PATH_ACCOUNT_STATUS: &str = "/api/v2/account/getAccountStatusAndUrl";
 const PATH_LOGIN: &str = "/api/v2/account/login";
 const PATH_REFRESH_TOKEN: &str = "/api/v2/account/refreshToken";
 const PATH_MFA_LOGIN: &str = "/api/v2/account/checkMFACodeAndLogin";
+const PATH_APP_SERVICE_URL: &str = "/api/v2/common/getAppServiceUrl";
 
 const CA_CERT_PEM: &[u8] = include_bytes!("../../certs/tplink-ca-chain.pem");
+
+/// Body keys whose values never reach stderr, even under `-v`: the account
+/// password (login, MFA), tokens (refresh), and the emailed MFA code.
+const REDACTED_KEYS: &[&str] = &[
+    "cloudPassword",
+    "password",
+    "token",
+    "refreshToken",
+    "accessToken",
+    "code",
+];
+
+/// A request body as it may be logged: every secret-bearing value replaced
+/// by `<redacted>`, at any depth. The only path a body takes to stderr.
+pub fn redacted(body: &serde_json::Value) -> String {
+    fn scrub(v: &mut serde_json::Value) {
+        match v {
+            serde_json::Value::Object(map) => {
+                for (k, x) in map.iter_mut() {
+                    if REDACTED_KEYS.contains(&k.as_str()) {
+                        *x = serde_json::Value::String("<redacted>".into());
+                    } else {
+                        scrub(x);
+                    }
+                }
+            }
+            serde_json::Value::Array(items) => items.iter_mut().for_each(scrub),
+            _ => {}
+        }
+    }
+    let mut copy = body.clone();
+    scrub(&mut copy);
+    copy.to_string()
+}
 
 pub struct LoginResult {
     pub token: String,
@@ -105,7 +140,7 @@ impl TPLinkApi {
 
         if self.verbose {
             eprintln!("[{}] POST {}", self.cloud_type, url);
-            eprintln!("Body: {}", body_json);
+            eprintln!("Body: {}", redacted(body));
         }
 
         let response = self
@@ -160,7 +195,7 @@ impl TPLinkApi {
 
         if self.verbose {
             eprintln!("[{}] POST {}/", self.cloud_type, self.host);
-            eprintln!("Body: {}", body_json);
+            eprintln!("Body: {}", redacted(body));
         }
 
         let response = self
@@ -387,7 +422,7 @@ impl TPLinkApi {
 
         if response.error_code == ERR_REFRESH_TOKEN_EXPIRED {
             return Err(AppError::TokenExpired {
-                message: "Refresh token has expired. Run 'tplc login' to re-authenticate.".into(),
+                message: "refresh token expired; run `tplc auth login`".into(),
                 error_code: Some(response.error_code),
             });
         }
@@ -401,6 +436,47 @@ impl TPLinkApi {
             }),
             error_code: Some(response.error_code),
         })
+    }
+
+    /// Resolve the host of one of the account's NBU services (the Tapo
+    /// app-server that keeps rooms, for instance) — `getAppServiceUrl`,
+    /// signed like every v2 call, token in the query. The app caches the
+    /// answer for 24h; so does `tplc` (in the session).
+    pub async fn get_app_service_url(
+        &self,
+        token: &str,
+        service_id: &str,
+    ) -> Result<String, AppError> {
+        let body = json!({ "serviceIds": [service_id] });
+        let response = self
+            .request_post_v2(&self.host, PATH_APP_SERVICE_URL, &body, Some(token))
+            .await?;
+        if response.error_code == ERR_TOKEN_EXPIRED {
+            return Err(AppError::TokenExpired {
+                message: "auth token expired".into(),
+                error_code: Some(response.error_code),
+            });
+        }
+        if !response.successful() {
+            return Err(AppError::Api {
+                message: response
+                    .msg
+                    .unwrap_or_else(|| "getAppServiceUrl failed".into()),
+                error_code: Some(response.error_code),
+            });
+        }
+        response
+            .result
+            .as_ref()
+            .and_then(|r| r.get("serviceUrls"))
+            .and_then(|u| u.get(service_id))
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .ok_or_else(|| AppError::Api {
+                message: format!("getAppServiceUrl returned no URL for {service_id}"),
+                error_code: None,
+            })
     }
 
     /// Call any cloud method by name (`{"method": …, "params": …}` on the
@@ -440,11 +516,45 @@ impl TPLinkApi {
 
         if response.error_code == ERR_TOKEN_EXPIRED {
             return Err(AppError::TokenExpired {
-                message: "Auth token expired".into(),
+                message: "auth token expired".into(),
                 error_code: Some(response.error_code),
             });
         }
 
-        Ok(vec![])
+        // Any other failure is reported, not read as an empty account.
+        Err(AppError::Api {
+            message: response
+                .msg
+                .unwrap_or_else(|| "getDeviceList failed".into()),
+            error_code: Some(response.error_code),
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn verbose_rendering_of_a_login_body_carries_no_secret() {
+        let body = json!({
+            "appType": "Kasa_Android_Mix",
+            "cloudUserName": "user@example.com",
+            "cloudPassword": "hunter2-secret",
+            "terminalUUID": "00000000-0000-4000-8000-000000000000",
+            "nested": {"code": "123456", "refreshToken": "rt-secret", "keep": "me"}
+        });
+        let out = redacted(&body);
+        assert!(!out.contains("hunter2-secret"), "{out}");
+        assert!(!out.contains("123456"), "{out}");
+        assert!(!out.contains("rt-secret"), "{out}");
+        assert!(out.contains("user@example.com") && out.contains("Kasa_Android_Mix"));
+        assert!(out.contains(r#""keep":"me""#), "{out}");
+        assert_eq!(out.matches("<redacted>").count(), 3);
+        // A refresh body hides its token; a passthrough body is untouched.
+        let refresh = json!({"appType": "x", "refreshToken": "rt", "terminalUUID": "t"});
+        assert!(!redacted(&refresh).contains(r#""rt""#));
+        let passthrough = json!({"method": "getDeviceList"});
+        assert_eq!(redacted(&passthrough), passthrough.to_string());
     }
 }

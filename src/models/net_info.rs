@@ -2,8 +2,11 @@ use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct DeviceNetInfo {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub ssid: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub key_type: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub rssi: Option<i32>,
 }
 

@@ -1,71 +1,72 @@
+//! `power on|off|toggle|status` (power-state/v1).
+
 use clap::Subcommand;
+use pk_cli_core::output::emit_one;
+use pk_cli_core::CliError;
 use serde_json::json;
 
-use crate::cli::output::print_json;
-use crate::config::RuntimeConfig;
-use crate::error::AppError;
+use super::emit::Ctx;
+use crate::resolve;
 
-use super::super::resolve;
-
-#[derive(Subcommand)]
+#[derive(Subcommand, Debug)]
 pub enum PowerCommand {
-    /// Turn device on
+    /// Turn a device on.
     On {
         /// Device name or ID
         device: String,
     },
-
-    /// Turn device off
+    /// Turn a device off.
     Off {
         /// Device name or ID
         device: String,
     },
-
-    /// Toggle device power state
+    /// Toggle a device's power state.
     Toggle {
         /// Device name or ID
         device: String,
     },
-
-    /// Check device power status
+    /// Report whether a device is on.
     Status {
         /// Device name or ID
         device: String,
     },
 }
 
-pub async fn handle(cmd: &PowerCommand, config: &RuntimeConfig) -> Result<(), AppError> {
-    match cmd {
-        PowerCommand::On { device } => {
-            let dev = resolve::resolve_device(device, config.verbose).await?;
+pub async fn handle(ctx: &Ctx<'_>, cmd: &PowerCommand) -> Result<(), CliError> {
+    let (name, requested) = match cmd {
+        PowerCommand::On { device } => (device, Some(true)),
+        PowerCommand::Off { device } => (device, Some(false)),
+        PowerCommand::Toggle { device } | PowerCommand::Status { device } => (device, None),
+    };
+    let dev = resolve::resolve_device(ctx, name).await?;
+    let power = match (cmd, requested) {
+        (_, Some(true)) => {
             dev.power_on().await?;
-            print_json(&json!({"device": dev.alias(), "power": "on"}));
-            Ok(())
+            "on"
         }
-        PowerCommand::Off { device } => {
-            let dev = resolve::resolve_device(device, config.verbose).await?;
+        (_, Some(false)) => {
             dev.power_off().await?;
-            print_json(&json!({"device": dev.alias(), "power": "off"}));
-            Ok(())
+            "off"
         }
-        PowerCommand::Toggle { device } => {
-            let dev = resolve::resolve_device(device, config.verbose).await?;
+        (PowerCommand::Toggle { .. }, None) => {
             let was_on = dev.is_on().await?;
             dev.toggle().await?;
-            let new_state = if was_on == Some(true) { "off" } else { "on" };
-            print_json(&json!({"device": dev.alias(), "power": new_state}));
-            Ok(())
+            if was_on == Some(true) {
+                "off"
+            } else {
+                "on"
+            }
         }
-        PowerCommand::Status { device } => {
-            let dev = resolve::resolve_device(device, config.verbose).await?;
-            let is_on = dev.is_on().await?;
-            let state = match is_on {
-                Some(true) => "on",
-                Some(false) => "off",
-                None => "unknown",
-            };
-            print_json(&json!({"device": dev.alias(), "power": state}));
-            Ok(())
-        }
-    }
+        _ => match dev.is_on().await? {
+            Some(true) => "on",
+            Some(false) => "off",
+            None => "unknown",
+        },
+    };
+    emit_one(
+        ctx.json,
+        "power-state",
+        json!({"device": dev.alias(), "device_id": dev.device_id, "power": power}),
+    );
+    Ok(())
 }

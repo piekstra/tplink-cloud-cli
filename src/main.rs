@@ -1,8 +1,11 @@
 use clap::Parser;
+use pk_cli_core::output;
 
-#[tokio::main]
-async fn main() {
+fn main() {
     let cli = tplc::cli::Cli::parse();
-    let exit_code = tplc::run(cli).await;
-    std::process::exit(exit_code);
+    let code = match tplc::run(&cli) {
+        Ok(code) => code,
+        Err(e) => output::fail(&e, cli.common.json),
+    };
+    std::process::exit(code);
 }

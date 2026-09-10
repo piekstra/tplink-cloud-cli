@@ -1,52 +1,80 @@
-use serde_json::json;
+//! `api <METHOD-NAME> [--params JSON] [--cloud kasa|tapo]` — call any
+//! account-cloud method by name (`{"method": …, "params": …}` on the signed
+//! v2 endpoint) and print the raw envelope. This is a cloud-RPC passthrough,
+//! not the family's HTTP `api <VERB> <PATH>` form: TP-Link's cloud has no
+//! REST paths to expose, only method names.
 
+use pk_cli_core::CliError;
+use serde_json::{json, Value};
+
+use pk_cli_core::output::emit_one;
+
+use super::emit::Ctx;
 use crate::api::client::TPLinkApi;
 use crate::api::cloud_type::CloudType;
-use crate::auth::credentials;
-use crate::cli::output::print_json;
-use crate::config::RuntimeConfig;
-use crate::error::AppError;
 
-pub async fn handle(
-    method: &str,
-    params: Option<&str>,
-    cloud: &str,
-    config: &RuntimeConfig,
-) -> Result<(), AppError> {
-    let params = params
-        .map(serde_json::from_str::<serde_json::Value>)
+#[derive(clap::Args, Debug, Clone)]
+pub struct ApiArgs {
+    /// Method name, e.g. getDeviceList, listDeviceGroups
+    pub method: String,
+    /// JSON object for the method's params
+    #[arg(long)]
+    pub params: Option<String>,
+    /// Which cloud to call (else $TPLC_CLOUD, then `config set default_cloud`, then kasa)
+    #[arg(long, value_enum, env = "TPLC_CLOUD")]
+    pub cloud: Option<CloudType>,
+}
+
+/// Parse `--params` before anything is read from the keychain.
+pub fn validate(args: &ApiArgs) -> Result<Option<Value>, CliError> {
+    args.params
+        .as_deref()
+        .map(|p| {
+            serde_json::from_str::<Value>(p)
+                .map_err(|e| CliError::Usage(format!("--params is not valid JSON: {e}")))
+        })
         .transpose()
-        .map_err(|e| AppError::InvalidInput(format!("--params is not valid JSON: {e}")))?;
-    let cloud_type = match cloud.to_lowercase().as_str() {
-        "kasa" => CloudType::Kasa,
-        "tapo" => CloudType::Tapo,
-        other => {
-            return Err(AppError::InvalidInput(format!(
-                "--cloud must be kasa or tapo, got `{other}`"
-            )))
-        }
-    };
-    let auth = credentials::get_auth_context(config.verbose).await?;
-    let (host, token) = match cloud_type {
-        CloudType::Kasa => (auth.regional_url.clone(), auth.token.clone()),
-        CloudType::Tapo => (
-            auth.tapo_regional_url
-                .clone()
-                .ok_or(AppError::NotAuthenticated)?,
-            auth.tapo_token.clone().ok_or(AppError::NotAuthenticated)?,
-        ),
-    };
-    let api = TPLinkApi::new(
-        Some(host),
-        config.verbose,
-        Some(auth.term_id.clone()),
-        cloud_type,
-    )?;
-    let resp = api.call_method(&token, method, params).await?;
-    print_json(&json!({
-        "error_code": resp.error_code,
-        "msg": resp.msg,
-        "result": resp.result,
-    }));
+}
+
+pub async fn handle(ctx: &Ctx<'_>, args: &ApiArgs, params: Option<Value>) -> Result<(), CliError> {
+    let cloud = args
+        .cloud
+        .or(ctx.cfg.default_cloud)
+        .unwrap_or(CloudType::Kasa);
+    let tokens = ctx.session()?;
+    let (token, host) = tokens.cloud_access(cloud)?;
+    let api = TPLinkApi::new(Some(host), ctx.verbose, Some(tokens.term_id.clone()), cloud)?;
+    let resp = api.call_method(&token, &args.method, params).await?;
+    emit_one(
+        ctx.json,
+        "api-response",
+        json!({
+            "cloud": cloud,
+            "method": args.method,
+            "error_code": resp.error_code,
+            "msg": resp.msg,
+            "result": resp.result,
+        }),
+    );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn params_must_be_json() {
+        let bad = ApiArgs {
+            method: "getDeviceList".into(),
+            params: Some("{nope".into()),
+            cloud: None,
+        };
+        assert_eq!(validate(&bad).unwrap_err().exit_code(), 2);
+        let good = ApiArgs {
+            params: Some(r#"{"a":1}"#.into()),
+            ..bad
+        };
+        assert_eq!(validate(&good).unwrap(), Some(json!({"a": 1})));
+    }
 }

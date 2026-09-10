@@ -1,0 +1,46 @@
+{
+  "page": 0,
+  "pageSize": 20,
+  "total": 3,
+  "data": [
+    {
+      "thingName": "0000000000000000000000000000000000000001",
+      "familyId": "FAM00001",
+      "roomId": "ROOM0002",
+      "nickname": "QmVkcm9vbSBEZXNrIExpZ2h0",
+      "deviceModel": "HS103(US)",
+      "deviceType": "SMART.KASAPLUG",
+      "category": "plug",
+      "status": 1,
+      "role": 0,
+      "mac": "00:00:00:00:00:01",
+      "appServerUrl": "http://127.0.0.1:8080"
+    },
+    {
+      "thingName": "TAPO_P100_ABCDEF1234567890ABCDEF1234567890",
+      "familyId": "FAM00001",
+      "roomId": "ROOM0003",
+      "nickname": "S2l0Y2hlbiBUYXBvIFBsdWc=",
+      "deviceModel": "P100",
+      "deviceType": "SMART.TAPOPLUG",
+      "category": "plug",
+      "status": 1,
+      "role": 0,
+      "mac": "00:00:00:00:00:02",
+      "appServerUrl": "http://127.0.0.1:8080"
+    },
+    {
+      "thingName": "TAPO_L530_CDEF1234567890ABCDEF1234567890AB",
+      "familyId": "FAM00001",
+      "roomId": null,
+      "nickname": "Living Room Tapo Bulb",
+      "deviceModel": "L530",
+      "deviceType": "SMART.TAPOBULB",
+      "category": "bulb",
+      "status": 0,
+      "role": 0,
+      "mac": "00:00:00:00:00:03",
+      "appServerUrl": "http://127.0.0.1:8080"
+    }
+  ]
+}
