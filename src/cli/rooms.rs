@@ -447,8 +447,11 @@ pub async fn handle(ctx: &Ctx<'_>, cmd: &RoomsCommand) -> Result<(), CliError> {
                 .filter_map(|t| {
                     let room_id = t.room_id.as_deref()?;
                     let room = rooms.iter().find(|r| r.room.id == room_id)?;
-                    let name = alias_of(&t.thing_name).or_else(|| t.display_name());
-                    Some(device_room_row(&t.thing_name, name, &room.room.name))
+                    // The account cloud hands Tapo aliases through base64 too.
+                    let name = alias_of(&t.thing_name)
+                        .map(|n| crate::api::nbu::decode_nickname(&n))
+                        .or_else(|| t.display_name());
+                    Some(device_room_row(&t.google_id(), name, &room.room.name))
                 })
                 .collect();
             emit_list(ctx.json, "device-rooms", items, &["name", "room", "id"]);

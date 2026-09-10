@@ -69,9 +69,30 @@ pub struct Thing {
     pub category: Option<String>,
     #[serde(default)]
     pub status: Option<i64>,
+    #[serde(default)]
+    pub mac: Option<String>,
 }
 
 impl Thing {
+    /// The id Google Home shows for this device (`partner_device_id`), so
+    /// `device-rooms/v1` rows join: Tapo's own integration reports the MAC
+    /// without separators, while Kasa devices shared into the Tapo app keep
+    /// their Kasa device id (the thing name).
+    pub fn google_id(&self) -> String {
+        let is_tapo = self
+            .device_type
+            .as_deref()
+            .is_some_and(|t| t.to_uppercase().starts_with("SMART.TAPO"));
+        match (&self.mac, is_tapo) {
+            (Some(mac), true) if !mac.trim().is_empty() => mac
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric())
+                .collect::<String>()
+                .to_uppercase(),
+            _ => self.thing_name.clone(),
+        }
+    }
+
     /// The user-facing name. Tapo firmware reports nicknames base64-encoded
     /// and the cloud passes some through as-is, so a value that decodes to
     /// clean UTF-8 text is taken as encoded; anything else is the name.
@@ -361,5 +382,41 @@ mod tests {
         assert_eq!(t.display_name().as_deref(), Some("Office Lamp"));
         let bare: Thing = serde_json::from_value(json!({"thingName": "x"})).unwrap();
         assert!(bare.room_id.is_none() && bare.display_name().is_none());
+    }
+}
+
+#[cfg(test)]
+mod google_id_tests {
+    use super::*;
+
+    fn thing(name: &str, kind: &str, mac: Option<&str>) -> Thing {
+        Thing {
+            thing_name: name.into(),
+            family_id: None,
+            room_id: None,
+            nickname: None,
+            device_model: None,
+            device_type: Some(kind.into()),
+            category: None,
+            status: None,
+            mac: mac.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn tapo_devices_join_on_mac_and_kasa_devices_on_their_id() {
+        assert_eq!(
+            thing("abc123", "SMART.TAPOLOCK", Some("10:5a:95:2f:ad:17")).google_id(),
+            "105A952FAD17"
+        );
+        assert_eq!(
+            thing("8006ABCD", "SMART.KASAPLUG", Some("00:11:22:33:44:55")).google_id(),
+            "8006ABCD"
+        );
+        assert_eq!(
+            thing("abc123", "SMART.TAPOPLUG", None).google_id(),
+            "abc123"
+        );
+        assert_eq!(decode_nickname("RnJvbnQgRG9vciBMb2Nr"), "Front Door Lock");
     }
 }
