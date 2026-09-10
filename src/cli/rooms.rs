@@ -252,22 +252,33 @@ fn select_homes<'f>(
     }
 }
 
-/// The one home a write goes to when `--home` is absent: the only home, or
-/// the default one; several without a default is a usage error.
-fn default_home(families: &[Family]) -> Result<&Family, CliError> {
-    match families {
-        [] => Err(CliError::NotFound("no home on this Tapo account".into())),
-        [one] => Ok(one),
-        many => many.iter().find(|f| f.is_default).ok_or_else(|| {
-            CliError::Usage(format!(
-                "several homes and no default; pass --home ({})",
-                many.iter()
-                    .map(|f| f.name.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ))
-        }),
+/// The home a thing that names none belongs to, among `homes`: the only
+/// one (flagged or not), else the one flagged default. The single
+/// definition behind `default_home` (writes) and `device_room_rows`.
+fn default_of<'f>(homes: &[&'f Family]) -> Option<&'f Family> {
+    match homes {
+        [one] => Some(one),
+        many => many.iter().copied().find(|f| f.is_default),
     }
+}
+
+/// The one home a write goes to when `--home` is absent: `default_of`,
+/// with several homes and no default a usage error.
+fn default_home(families: &[Family]) -> Result<&Family, CliError> {
+    if families.is_empty() {
+        return Err(CliError::NotFound("no home on this Tapo account".into()));
+    }
+    let all: Vec<&Family> = families.iter().collect();
+    default_of(&all).ok_or_else(|| {
+        CliError::Usage(format!(
+            "several homes and no default; pass --home ({})",
+            families
+                .iter()
+                .map(|f| f.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))
+    })
 }
 
 /// Exactly one home: the `--home` reference when given, else the default.
@@ -395,13 +406,15 @@ pub fn room_gone(families: &[Family], room_id: &str) -> bool {
 /// devices in no room keeps a row without `room`, so a consumer can report
 /// the gap; a Kasa device shared into the Tapo app is the Kasa app's to
 /// file (`groups devices`), so roomless it is left out. A thing in no home
-/// counts as the default home's.
+/// counts as the default home's among `homes` (`default_of`, the rule
+/// `rooms move` uses).
 pub fn device_room_rows(
     things: &[Thing],
     homes: &[&Family],
     alias_of: impl Fn(&str) -> Option<String>,
 ) -> Vec<Value> {
     let rooms = rooms_of(homes);
+    let home_less = default_of(homes);
     things
         .iter()
         .filter_map(|t| {
@@ -409,11 +422,9 @@ pub fn device_room_rows(
                 Some(rid) => Some(rooms.iter().find(|r| r.room.id == rid)?),
                 None => None,
             };
-            // A thing that names no home is the default home's, as `rooms
-            // move` treats it (`target_homes`), so it never shows under another.
             let in_home = match t.family_id.as_deref() {
                 Some(fid) => homes.iter().any(|h| h.id == fid),
-                None => homes.iter().any(|h| h.is_default),
+                None => home_less.is_some(),
             };
             let in_scope = room.is_some() || (t.is_native_tapo() && in_home);
             if !in_scope {
@@ -828,15 +839,34 @@ mod tests {
         }))
         .unwrap();
         assert!(device_room_rows(&[loose], &homes, |_| None).is_empty());
-        // A Tapo device in no home is the default home's, never another's.
+        // A Tapo device in no home is the default home's: the only home, else
+        // the flagged one (`default_of`, the rule `rooms move` uses).
         let homeless: Thing = serde_json::from_value(json!({
             "thingName": "TAPO_P100_9999", "familyId": null, "roomId": null,
-            "nickname": "Attic Plug", "deviceType": "SMART.TAPOPLUG", "mac": "00:00:00:00:00:10"
+            "nickname": "Attic Plug", "deviceType": "SMART.TAPOPLUG",
+            "mac": "00:00:00:00:00:10"
         }))
         .unwrap();
         let only = std::slice::from_ref(&homeless);
         assert_eq!(device_room_rows(only, &homes, |_| None).len(), 1);
-        assert!(device_room_rows(only, &[&elsewhere], |_| None).is_empty());
+        // One selected home is the default whether or not it is flagged.
+        assert_eq!(device_room_rows(only, &[&elsewhere], |_| None).len(), 1);
+        // Several homes and none flagged: nothing to file it under.
+        let no_default: Vec<Family> = two_homes()
+            .into_iter()
+            .map(|mut h| {
+                h.is_default = false;
+                h
+            })
+            .collect();
+        let several: Vec<&Family> = no_default.iter().collect();
+        assert!(device_room_rows(only, &several, |_| None).is_empty());
+        let flagged = two_homes();
+        let several: Vec<&Family> = flagged.iter().collect();
+        assert_eq!(
+            device_room_rows(only, &several, |_| None)[0]["id"],
+            "000000000010"
+        );
     }
 
     #[test]
