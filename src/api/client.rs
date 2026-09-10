@@ -18,6 +18,40 @@ const PATH_APP_SERVICE_URL: &str = "/api/v2/common/getAppServiceUrl";
 
 const CA_CERT_PEM: &[u8] = include_bytes!("../../certs/tplink-ca-chain.pem");
 
+/// Body keys whose values never reach stderr, even under `-v`: the account
+/// password (login, MFA), tokens (refresh), and the emailed MFA code.
+const REDACTED_KEYS: &[&str] = &[
+    "cloudPassword",
+    "password",
+    "token",
+    "refreshToken",
+    "accessToken",
+    "code",
+];
+
+/// A request body as it may be logged: every secret-bearing value replaced
+/// by `<redacted>`, at any depth. The only path a body takes to stderr.
+pub fn redacted(body: &serde_json::Value) -> String {
+    fn scrub(v: &mut serde_json::Value) {
+        match v {
+            serde_json::Value::Object(map) => {
+                for (k, x) in map.iter_mut() {
+                    if REDACTED_KEYS.contains(&k.as_str()) {
+                        *x = serde_json::Value::String("<redacted>".into());
+                    } else {
+                        scrub(x);
+                    }
+                }
+            }
+            serde_json::Value::Array(items) => items.iter_mut().for_each(scrub),
+            _ => {}
+        }
+    }
+    let mut copy = body.clone();
+    scrub(&mut copy);
+    copy.to_string()
+}
+
 pub struct LoginResult {
     pub token: String,
     pub refresh_token: Option<String>,
@@ -106,7 +140,7 @@ impl TPLinkApi {
 
         if self.verbose {
             eprintln!("[{}] POST {}", self.cloud_type, url);
-            eprintln!("Body: {}", body_json);
+            eprintln!("Body: {}", redacted(body));
         }
 
         let response = self
@@ -161,7 +195,7 @@ impl TPLinkApi {
 
         if self.verbose {
             eprintln!("[{}] POST {}/", self.cloud_type, self.host);
-            eprintln!("Body: {}", body_json);
+            eprintln!("Body: {}", redacted(body));
         }
 
         let response = self
@@ -494,5 +528,33 @@ impl TPLinkApi {
                 .unwrap_or_else(|| "getDeviceList failed".into()),
             error_code: Some(response.error_code),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn verbose_rendering_of_a_login_body_carries_no_secret() {
+        let body = json!({
+            "appType": "Kasa_Android_Mix",
+            "cloudUserName": "user@example.com",
+            "cloudPassword": "hunter2-secret",
+            "terminalUUID": "00000000-0000-4000-8000-000000000000",
+            "nested": {"code": "123456", "refreshToken": "rt-secret", "keep": "me"}
+        });
+        let out = redacted(&body);
+        assert!(!out.contains("hunter2-secret"), "{out}");
+        assert!(!out.contains("123456"), "{out}");
+        assert!(!out.contains("rt-secret"), "{out}");
+        assert!(out.contains("user@example.com") && out.contains("Kasa_Android_Mix"));
+        assert!(out.contains(r#""keep":"me""#), "{out}");
+        assert_eq!(out.matches("<redacted>").count(), 3);
+        // A refresh body hides its token; a passthrough body is untouched.
+        let refresh = json!({"appType": "x", "refreshToken": "rt", "terminalUUID": "t"});
+        assert!(!redacted(&refresh).contains(r#""rt""#));
+        let passthrough = json!({"method": "getDeviceList"});
+        assert_eq!(redacted(&passthrough), passthrough.to_string());
     }
 }
