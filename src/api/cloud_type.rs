@@ -1,7 +1,7 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Which TP-Link cloud ecosystem a device belongs to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "lowercase")]
 pub enum CloudType {
     Kasa,
@@ -9,6 +9,15 @@ pub enum CloudType {
 }
 
 impl CloudType {
+    /// Parse a user-supplied cloud name (case-insensitive).
+    pub fn parse(s: &str) -> Result<Self, String> {
+        match s.to_ascii_lowercase().as_str() {
+            "kasa" => Ok(CloudType::Kasa),
+            "tapo" => Ok(CloudType::Tapo),
+            other => Err(format!("unknown cloud `{other}` (expected kasa or tapo)")),
+        }
+    }
+
     pub fn host(&self) -> &'static str {
         match self {
             CloudType::Kasa => "https://n-wap.tplinkcloud.com",
@@ -64,5 +73,24 @@ impl CloudType {
 impl std::fmt::Display for CloudType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.display_name())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_is_case_insensitive_and_rejects_unknowns() {
+        assert_eq!(CloudType::parse("Kasa"), Ok(CloudType::Kasa));
+        assert_eq!(CloudType::parse("TAPO"), Ok(CloudType::Tapo));
+        assert!(CloudType::parse("hue").is_err());
+    }
+
+    #[test]
+    fn serializes_lowercase() {
+        assert_eq!(serde_json::to_value(CloudType::Tapo).unwrap(), "tapo");
+        let back: CloudType = serde_json::from_value(serde_json::json!("kasa")).unwrap();
+        assert_eq!(back, CloudType::Kasa);
     }
 }

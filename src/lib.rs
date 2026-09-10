@@ -1,64 +1,169 @@
+//! `tplc` — TP-Link Kasa and Tapo devices from the terminal, over the cloud
+//! API. Conforms to piekstra-cli/1: `--json` everywhere (one schema-tagged
+//! DTO per command), the family exit codes, keychain-only secrets.
+//!
+//! Layering: `api/` and `models/` are the vendor client (async, `AppError`);
+//! `session.rs` is the keychain; `cli/` is the clap tree and one handler
+//! module per command group, all in `CliError`; [`run`] dispatches.
+
 pub mod api;
-pub mod auth;
 pub mod cli;
 pub mod config;
 pub mod error;
 pub mod models;
 pub mod resolve;
+pub mod session;
 
-use cli::output::print_error;
-use config::{OutputMode, RuntimeConfig};
-use error::AppError;
+use clap::CommandFactory;
+use pk_cli_config::ConfigStore;
+use pk_cli_core::info::{AuthInfo, CliInfo};
+use pk_cli_core::{output, CliError};
+use pk_cli_selfupdate::Updater;
 
-pub async fn run(cli_args: cli::Cli) -> i32 {
-    let config = RuntimeConfig {
-        output_mode: if cli_args.table {
-            OutputMode::Table
-        } else {
-            OutputMode::Json
-        },
-        verbose: cli_args.verbose,
+use cli::emit::Ctx;
+use cli::{AuthCmd, Cli, Command};
+use config::Config;
+use session::Sessions;
+
+pub const BIN: &str = session::BIN;
+const REPO: &str = "piekstra/tplink-cloud-cli";
+
+/// Run one invocation and return the process exit code. Errors are the
+/// caller's to report (`output::fail`); an `Ok` code other than 0 means the
+/// command already emitted its own outcome (a login parked for MFA).
+pub fn run(cli: &Cli) -> Result<i32, CliError> {
+    if cli.table && !cli.common.quiet {
+        eprintln!("note: --table is deprecated and ignored; text output is the default (use --json for JSON)");
+    }
+    let store = ConfigStore::new(BIN).with_override(cli.config.clone());
+
+    // Offline commands first: nothing here may touch the keychain or the
+    // vendor API, and self-update's blocking HTTP must run outside the
+    // async runtime built below.
+    match &cli.command {
+        Command::Config(cmd) => return cli::config::run(cli.common.json, cmd, &store).map(|()| 0),
+        Command::SelfUpdate(args) => {
+            return Updater {
+                repo: REPO.into(),
+                binary: BIN.into(),
+                target: env!("BUILD_TARGET").into(),
+                current: env!("CARGO_PKG_VERSION").into(),
+            }
+            .run(args, cli.common.json, cli.common.quiet)
+            .map(|()| 0)
+        }
+        Command::Completions { shell } => {
+            clap_complete::generate(*shell, &mut Cli::command(), BIN, &mut std::io::stdout());
+            return Ok(0);
+        }
+        Command::Info { cmd: None } => {
+            output::json(&serde_json::to_value(info()).unwrap_or_default());
+            return Ok(0);
+        }
+        Command::Auth(AuthCmd::SetCredential(args)) => {
+            return cli::auth::set_credential(args).map(|()| 0)
+        }
+        _ => {}
+    }
+
+    // Argument validation that needs no I/O, so bad input never reaches the
+    // keychain (SPEC §1.5: exit 2 first).
+    let api_params = match &cli.command {
+        Command::Api(args) => cli::api::validate(args)?,
+        Command::Schedule(cmd) => {
+            cli::schedule::validate(cmd)?;
+            None
+        }
+        Command::Rooms(cmd) => {
+            cli::rooms::gate(cmd, cli.common.interactive())?;
+            None
+        }
+        _ => None,
     };
 
-    let result = dispatch(cli_args.command, &config).await;
+    let cfg: Config = store.load()?;
+    let sessions = Sessions::new();
+    let ctx = Ctx {
+        json: cli.common.json,
+        verbose: cli.common.verbose,
+        quiet: cli.common.quiet,
+        interactive: cli.common.interactive(),
+        store: &store,
+        sessions: &sessions,
+        cfg,
+    };
 
-    match result {
-        Ok(()) => 0,
-        Err(err) => {
-            print_error(&err);
-            err.exit_code()
-        }
-    }
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| CliError::Other(format!("starting async runtime: {e}")))?;
+    rt.block_on(dispatch(cli, &ctx, api_params))
 }
 
-async fn dispatch(command: cli::Commands, config: &RuntimeConfig) -> Result<(), AppError> {
-    match command {
-        cli::Commands::Login {
-            stdin,
-            username,
-            mfa_code,
-        } => cli::auth::handle_login(config, stdin, username.as_deref(), mfa_code.as_deref()).await,
-        cli::Commands::Logout => cli::auth::handle_logout(config).await,
-        cli::Commands::Status => cli::auth::handle_status(config).await,
-        cli::Commands::Devices(cmd) => cli::devices::handle(&cmd, config).await,
-        cli::Commands::Power(cmd) => cli::power::handle(&cmd, config).await,
-        cli::Commands::Energy(cmd) => cli::energy::handle(&cmd, config).await,
-        cli::Commands::Light(cmd) => cli::light::handle(&cmd, config).await,
-        cli::Commands::Schedule(cmd) => cli::schedule::handle(&cmd, config).await,
-        cli::Commands::Info(cmd) => cli::info::handle(&cmd, config).await,
-        cli::Commands::Groups(cmd) => cli::groups::handle(&cmd, config).await,
-        cli::Commands::Api {
-            method,
-            params,
-            cloud,
-        } => cli::api::handle(&method, params.as_deref(), &cloud, config).await,
-        cli::Commands::Led { state, device } => {
-            let dev = resolve::resolve_device(&device, config.verbose).await?;
+async fn dispatch(
+    cli: &Cli,
+    ctx: &Ctx<'_>,
+    api_params: Option<serde_json::Value>,
+) -> Result<i32, CliError> {
+    match &cli.command {
+        Command::Auth(AuthCmd::Login(args)) | Command::Login(args) => {
+            return cli::auth::login(ctx, args).await
+        }
+        Command::Auth(AuthCmd::Status) | Command::Status => cli::auth::status(ctx)?,
+        Command::Auth(AuthCmd::Logout(args)) | Command::Logout(args) => {
+            cli::auth::logout(ctx, args)?
+        }
+        Command::Devices(cmd) => cli::devices::handle(ctx, cmd).await?,
+        Command::Power(cmd) => cli::power::handle(ctx, cmd).await?,
+        Command::Energy(cmd) => cli::energy::handle(ctx, cmd).await?,
+        Command::Light(cmd) => cli::light::handle(ctx, cmd).await?,
+        Command::Schedule(cmd) => cli::schedule::handle(ctx, cmd).await?,
+        Command::Info { cmd: Some(cmd) } => cli::info::handle(ctx, cmd).await?,
+        Command::Rooms(cmd) => cli::rooms::handle(ctx, cmd).await?,
+        Command::Groups(cmd) => cli::groups::handle(ctx, cmd).await?,
+        Command::Api(args) => cli::api::handle(ctx, args, api_params).await?,
+        Command::Led { state, device } => {
+            let dev = resolve::resolve_device(ctx, device).await?;
             let on = matches!(state, cli::LedState::On);
             dev.set_led_state(on).await?;
-            let state_str = if on { "on" } else { "off" };
-            cli::output::print_json(&serde_json::json!({"device": dev.alias(), "led": state_str}));
-            Ok(())
+            pk_cli_core::output::emit_one(
+                ctx.json,
+                "led-state",
+                serde_json::json!({
+                    "device": dev.alias(),
+                    "device_id": dev.device_id,
+                    "led": if on { "on" } else { "off" },
+                }),
+            );
         }
+        Command::Auth(AuthCmd::SetCredential(_))
+        | Command::Config(_)
+        | Command::SelfUpdate(_)
+        | Command::Completions { .. }
+        | Command::Info { cmd: None } => unreachable!("handled before the runtime"),
     }
+    Ok(0)
 }
+
+/// The `cli-info/v1` discovery document (SPEC §1.6).
+pub fn info() -> CliInfo {
+    CliInfo::new(
+        BIN,
+        env!("CARGO_PKG_VERSION"),
+        &format!("https://github.com/{REPO}"),
+        AuthInfo {
+            required: true,
+            method: "password".into(),
+            login_hint: Some(format!("{BIN} auth login")),
+        },
+        &[
+            "devices", "power", "energy", "light", "schedule", "info", "led", "rooms", "groups",
+            "api",
+        ],
+    )
+    .with_profiles(&[SMART_HOME_PROFILE])
+}
+
+/// The documented-only `smart-home/v1` profile (DESIGN.md §1.8): `rooms
+/// devices` and `groups devices` emit its `device-rooms/v1` shape.
+pub const SMART_HOME_PROFILE: &str = "smart-home/v1";

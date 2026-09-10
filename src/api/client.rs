@@ -14,6 +14,7 @@ const PATH_ACCOUNT_STATUS: &str = "/api/v2/account/getAccountStatusAndUrl";
 const PATH_LOGIN: &str = "/api/v2/account/login";
 const PATH_REFRESH_TOKEN: &str = "/api/v2/account/refreshToken";
 const PATH_MFA_LOGIN: &str = "/api/v2/account/checkMFACodeAndLogin";
+const PATH_APP_SERVICE_URL: &str = "/api/v2/common/getAppServiceUrl";
 
 const CA_CERT_PEM: &[u8] = include_bytes!("../../certs/tplink-ca-chain.pem");
 
@@ -387,7 +388,7 @@ impl TPLinkApi {
 
         if response.error_code == ERR_REFRESH_TOKEN_EXPIRED {
             return Err(AppError::TokenExpired {
-                message: "Refresh token has expired. Run 'tplc login' to re-authenticate.".into(),
+                message: "refresh token expired; run `tplc auth login`".into(),
                 error_code: Some(response.error_code),
             });
         }
@@ -401,6 +402,47 @@ impl TPLinkApi {
             }),
             error_code: Some(response.error_code),
         })
+    }
+
+    /// Resolve the host of one of the account's NBU services (the Tapo
+    /// app-server that keeps rooms, for instance) — `getAppServiceUrl`,
+    /// signed like every v2 call, token in the query. The app caches the
+    /// answer for 24h; so does `tplc` (in the session).
+    pub async fn get_app_service_url(
+        &self,
+        token: &str,
+        service_id: &str,
+    ) -> Result<String, AppError> {
+        let body = json!({ "serviceIds": [service_id] });
+        let response = self
+            .request_post_v2(&self.host, PATH_APP_SERVICE_URL, &body, Some(token))
+            .await?;
+        if response.error_code == ERR_TOKEN_EXPIRED {
+            return Err(AppError::TokenExpired {
+                message: "auth token expired".into(),
+                error_code: Some(response.error_code),
+            });
+        }
+        if !response.successful() {
+            return Err(AppError::Api {
+                message: response
+                    .msg
+                    .unwrap_or_else(|| "getAppServiceUrl failed".into()),
+                error_code: Some(response.error_code),
+            });
+        }
+        response
+            .result
+            .as_ref()
+            .and_then(|r| r.get("serviceUrls"))
+            .and_then(|u| u.get(service_id))
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .ok_or_else(|| AppError::Api {
+                message: format!("getAppServiceUrl returned no URL for {service_id}"),
+                error_code: None,
+            })
     }
 
     /// Call any cloud method by name (`{"method": …, "params": …}` on the
@@ -440,11 +482,17 @@ impl TPLinkApi {
 
         if response.error_code == ERR_TOKEN_EXPIRED {
             return Err(AppError::TokenExpired {
-                message: "Auth token expired".into(),
+                message: "auth token expired".into(),
                 error_code: Some(response.error_code),
             });
         }
 
-        Ok(vec![])
+        // Any other failure is reported, not read as an empty account.
+        Err(AppError::Api {
+            message: response
+                .msg
+                .unwrap_or_else(|| "getDeviceList failed".into()),
+            error_code: Some(response.error_code),
+        })
     }
 }

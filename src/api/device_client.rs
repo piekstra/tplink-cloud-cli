@@ -131,7 +131,7 @@ impl DeviceClient {
 
         if api_response.error_code == ERR_TOKEN_EXPIRED {
             return Err(AppError::TokenExpired {
-                message: "Auth token expired".into(),
+                message: "auth token expired".into(),
                 error_code: Some(api_response.error_code),
             });
         }

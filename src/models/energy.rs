@@ -2,9 +2,13 @@ use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct CurrentPower {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub voltage_mv: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub current_ma: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub power_mw: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub total_wh: Option<f64>,
 }
 
@@ -33,9 +37,13 @@ impl CurrentPower {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct DayPowerSummary {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub year: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub month: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub day: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub energy_wh: Option<f64>,
 }
 
@@ -55,8 +63,11 @@ impl DayPowerSummary {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct MonthPowerSummary {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub year: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub month: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub energy_wh: Option<f64>,
 }
 
