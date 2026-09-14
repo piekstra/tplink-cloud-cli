@@ -232,11 +232,15 @@ the cloud passes some through as-is. `Thing::display_name` decodes a value
 that is valid base64 of clean text and keeps anything else verbatim. `tplc
 rooms devices` prefers the account cloud's `alias` for the same `deviceId`.
 
-**Trap — the account cloud is encoded too.** The Tapo cloud's v2
-`getDeviceList` hands `alias` through base64 as well
-(`RnJvbnQgRG9vciBMb2Nr`), while Kasa's is as typed. `DeviceInfo::from_cloud`
-decodes it once, where the list enters the program, so `devices list`, name
-resolution and `rooms devices` all see the real name; decode nowhere else.
+**Trap — the account cloud is encoded too, on both clouds.** The v2
+`getDeviceList` hands a Tapo device's `alias` through base64
+(`RnJvbnQgRG9vciBMb2Nr`) whichever cloud lists it: the Kasa cloud lists
+Tapo devices as well, typed `SMART.TAPO<KIND>` (`SMART.TAPOLOCK` for the
+DL110), and since Kasa wins the cross-cloud de-duplication that copy is the
+one the CLI keeps. A Kasa device's alias (`IOT.*` types) is as typed.
+`DeviceInfo::from_cloud` decodes once, where the list enters the program
+(Tapo cloud, or a `SMART.TAPO*` type), so `devices list`, name resolution
+and `rooms devices` all see the real name; decode nowhere else.
 
 **Trap — Google's id is the MAC.** Google Home's Tapo integration reports
 `partner_device_id` as the MAC without separators, not `thingName`, so a

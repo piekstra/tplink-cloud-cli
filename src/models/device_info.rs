@@ -34,16 +34,25 @@ impl DeviceInfo {
     }
 
     /// A device as one cloud listed it. This is where a name enters the
-    /// program, so it is also where the Tapo cloud's encoding is undone:
-    /// Tapo hands aliases through base64 (its firmware reports them that
-    /// way), Kasa hands them through as typed.
+    /// program, so it is also where Tapo's encoding is undone: Tapo
+    /// firmware reports its alias base64-encoded and both clouds pass it
+    /// through that way (the Kasa cloud lists Tapo devices too, typed
+    /// `SMART.TAPO*`), while a Kasa device's alias is as typed.
     pub fn from_cloud(value: &serde_json::Value, cloud: CloudType) -> Option<Self> {
         let mut info = Self::from_json(value)?;
         info.cloud_type = Some(cloud);
-        if cloud == CloudType::Tapo {
+        if cloud == CloudType::Tapo || info.is_tapo_device() {
             info.alias = info.alias.as_deref().map(decode_encoded_name);
         }
         Some(info)
+    }
+
+    /// One of Tapo's own devices, whichever cloud listed it: the clouds
+    /// type them `SMART.TAPO<KIND>` (Kasa devices are `IOT.*`).
+    pub fn is_tapo_device(&self) -> bool {
+        self.device_type
+            .as_deref()
+            .is_some_and(|t| t.to_uppercase().starts_with("SMART.TAPO"))
     }
 
     pub fn alias_or_name(&self) -> &str {
@@ -102,19 +111,29 @@ mod tests {
     }
 
     #[test]
-    fn the_tapo_alias_is_decoded_at_the_boundary_and_kasa_is_not() {
-        let listed =
+    fn tapo_aliases_are_decoded_at_the_boundary_whichever_cloud_lists_them() {
+        let by_tapo =
             json!({"deviceId": "d1", "alias": "RnJvbnQgRG9vciBMb2Nr", "deviceModel": "L530"});
-        let tapo = DeviceInfo::from_cloud(&listed, CloudType::Tapo).unwrap();
+        let tapo = DeviceInfo::from_cloud(&by_tapo, CloudType::Tapo).unwrap();
         assert_eq!(tapo.alias_or_name(), "Front Door Lock");
         assert_eq!(tapo.cloud_type, Some(CloudType::Tapo));
-        let kasa = DeviceInfo::from_cloud(&listed, CloudType::Kasa).unwrap();
-        assert_eq!(
-            kasa.alias_or_name(),
-            "RnJvbnQgRG9vciBMb2Nr",
-            "Kasa names are as typed"
-        );
-        let plain = json!({"deviceId": "d2", "alias": "Porch Light"});
+        // The Kasa cloud lists Tapo devices too, typed SMART.TAPO*, encoded the same way.
+        let shared = json!({
+            "deviceId": "d2", "alias": "RnJvbnQgRG9vciBMb2Nr",
+            "deviceModel": "DL110(US)", "deviceType": "SMART.TAPOLOCK"
+        });
+        let lock = DeviceInfo::from_cloud(&shared, CloudType::Kasa).unwrap();
+        assert!(lock.is_tapo_device());
+        assert_eq!(lock.alias_or_name(), "Front Door Lock");
+        // A Kasa device's alias is as typed, even when it looks like base64.
+        let kasa = json!({
+            "deviceId": "d3", "alias": "RnJvbnQgRG9vciBMb2Nr",
+            "deviceModel": "HS103(US)", "deviceType": "IOT.SMARTPLUGSWITCH"
+        });
+        let plug = DeviceInfo::from_cloud(&kasa, CloudType::Kasa).unwrap();
+        assert!(!plug.is_tapo_device());
+        assert_eq!(plug.alias_or_name(), "RnJvbnQgRG9vciBMb2Nr");
+        let plain = json!({"deviceId": "d4", "alias": "Porch Light"});
         assert_eq!(
             DeviceInfo::from_cloud(&plain, CloudType::Tapo)
                 .unwrap()

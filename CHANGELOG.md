@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.2 — 2026-09-14
+
+- A Tapo device the **Kasa** cloud lists (it lists them too, typed
+  `SMART.TAPO*`, and wins the cross-cloud de-duplication) now has its
+  base64 alias decoded like one the Tapo cloud lists, so the Tapo lock
+  shows as "Front Door Lock" everywhere instead of `RnJvbnQgRG9vciBMb2Nr`
+  in `devices list`, name resolution and `rooms devices`.
+
 ## 0.2.1 — 2026-09-10
 
 - `rooms devices` rows now join with Google Home: one of Tapo's own devices
