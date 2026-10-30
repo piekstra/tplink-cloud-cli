@@ -39,9 +39,11 @@ clean:
 # an unsigned reinstall silently revokes them and the next run prompts again.
 # Re-signing with the stable shared identity keeps one grant valid across every
 # future install.
+# `--locked` builds from Cargo.lock, the versions `verify` tested; without it
+# `cargo install` re-resolves to the newest semver-compatible crates.
 install: SIGN_TARGET = $${CARGO_INSTALL_ROOT:-$$HOME/.cargo}/bin/$(BIN)
 install:
-	$(CARGO) install --path . --force
+	$(CARGO) install --locked --path . --force
 	@$(SIGN)
 
 deps:

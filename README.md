@@ -19,7 +19,7 @@ it on your own account, at your own risk.
 brew install piekstra/tap/tplc
 # or a release binary: https://github.com/piekstra/tplink-cloud-cli/releases
 # or from source:
-cargo install --git https://github.com/piekstra/tplink-cloud-cli
+cargo install --git https://github.com/piekstra/tplink-cloud-cli --locked
 ```
 
 Later: `tplc self-update` (or `--check` to only look).

@@ -78,6 +78,10 @@ jobs:
         uses: rustsec/audit-check@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+      - name: cargo-deny
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
       - name: gitleaks
         uses: gitleaks/gitleaks-action@v2
         env:
