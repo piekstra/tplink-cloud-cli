@@ -123,6 +123,19 @@ jobs:
           lipo -create -output bin/universal-apple-darwin/tplc \
             bin/aarch64-apple-darwin/tplc bin/x86_64-apple-darwin/tplc
           lipo -info bin/universal-apple-darwin/tplc
+      # A binary that fails at startup is not published. The x86_64 macOS slice cannot
+      # run on this arm64 runner. None of this reads a credential.
+      - name: Run what this runner can run
+        run: |
+          set -euo pipefail
+          case "$RUNNER_OS" in
+            macOS) bins=(bin/aarch64-apple-darwin/tplc bin/universal-apple-darwin/tplc) ;;
+            *) bins=(bin/x86_64-unknown-linux-gnu/tplc) ;;
+          esac
+          for b in "${bins[@]}"; do
+            "$b" --version
+            "$b" mcp --list-tools > /dev/null
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: bin-${{ runner.os }}
