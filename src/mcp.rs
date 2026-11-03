@@ -16,7 +16,7 @@
 //! shares (`session::refresh`). No tool moves a legacy session or creates a keychain item.
 
 use std::cell::RefCell;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use pk_cli_core::CliError;
 use pk_cli_mcp::{
@@ -61,6 +61,22 @@ const SEND_DEADLINE: Duration = Duration::from_secs(75);
 
 /// No read-back starts this long after the call began.
 const READ_BACK_DEADLINE: Duration = Duration::from_secs(90);
+
+/// When a call began, on both clocks. `Instant` stops while a Mac sleeps, so a keychain prompt
+/// answered the next morning would read as seconds later on it. The wall clock runs on, and one
+/// that moved backwards says nothing, which leaves the `Instant`.
+#[derive(Debug, Clone, Copy)]
+struct CallStart {
+    monotonic: Instant,
+    wall: SystemTime,
+}
+
+impl CallStart {
+    fn elapsed(&self, wall_now: SystemTime) -> Duration {
+        let wall = wall_now.duration_since(self.wall).unwrap_or_default();
+        self.monotonic.elapsed().max(wall)
+    }
+}
 
 /// Everything a tool can send to a device. Closed: nothing else reaches a device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -150,6 +166,10 @@ pub trait Source {
     /// How long after a call began a read-back may still start.
     fn read_back_deadline(&self) -> Duration {
         READ_BACK_DEADLINE
+    }
+    /// The time of day, for [`CallStart`].
+    fn wall_clock(&self) -> SystemTime {
+        SystemTime::now()
     }
 }
 
@@ -739,7 +759,10 @@ impl<S: Source> TplinkTools<S> {
     /// Resolve one device by its full name or id, check it may and can take the change, send
     /// it, and read the result back.
     async fn change(&self, query: &str, change: Change) -> Result<ToolOutput, ToolError> {
-        let started = Instant::now();
+        let started = CallStart {
+            monotonic: Instant::now(),
+            wall: self.source.wall_clock(),
+        };
         let api = self.source.open().map_err(tool_err)?;
         let fetched = api.devices().await.map_err(tool_err)?;
         let device = named_device(&fetched.devices, query).map_err(tool_err)?;
@@ -755,7 +778,7 @@ impl<S: Source> TplinkTools<S> {
                 fetched.gaps.join(" ")
             ))));
         }
-        if started.elapsed() >= self.source.send_deadline() {
+        if started.elapsed(self.source.wall_clock()) >= self.source.send_deadline() {
             return Err(tool_err(CliError::Upstream(format!(
                 "nothing was sent: this call waited over {} s to reach the command, on a keychain \
                  prompt, a lock or a slow list, and its caller may have stopped waiting. Call it \
@@ -780,7 +803,7 @@ impl<S: Source> TplinkTools<S> {
         device: &Listed,
         change: Change,
         sent: Sent,
-        started: Instant,
+        started: CallStart,
     ) -> Controlled {
         let mut state = DeviceState {
             name: device.name().to_string(),
@@ -790,7 +813,7 @@ impl<S: Source> TplinkTools<S> {
         let mut failure = None;
         let mut confirmed = false;
         for wait in READ_BACK_WAITS {
-            if started.elapsed() >= self.source.read_back_deadline() {
+            if started.elapsed(self.source.wall_clock()) >= self.source.read_back_deadline() {
                 failure.get_or_insert(CliError::Upstream(
                     "there was no time left to read it".into(),
                 ));

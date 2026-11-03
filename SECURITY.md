@@ -43,8 +43,8 @@ no session is an error asking the user to run `tplc auth login` in a terminal. I
 session back after a renewal, because a refresh can retire the old token, and it does that under a lock
 in `~/.config/tplc/token-refresh.lock` shared with every other `tplc` process. On macOS a binary the
 keychain has not granted raises a prompt on a call, and a server left unattended waits on it. A write
-that reaches its command 75 s or more after the call began sends nothing and says so, so a prompt
-answered late cannot switch a device. The Claude Desktop extension is such a binary, with a grant of
+that reaches its command 75 s or more after the call began, by the wall clock or by a clock that stops
+while a Mac sleeps, sends nothing and says so, so a prompt answered late cannot switch a device. The Claude Desktop extension is such a binary, with a grant of
 its own.
 
 A write by name is refused while a cloud's list or an answering strip's outlets are missing, because
