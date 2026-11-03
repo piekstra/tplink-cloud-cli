@@ -105,6 +105,7 @@ fn fleet() -> Vec<Listed> {
 struct Fake {
     devices: RefCell<Vec<Listed>>,
     gaps: RefCell<Vec<String>>,
+    unseen: RefCell<Vec<String>>,
     /// Answers to `get_sysinfo`, one each until the last, which repeats.
     states: RefCell<VecDeque<Result<Value, String>>>,
     energy: RefCell<Value>,
@@ -117,6 +118,8 @@ struct Fake {
     sent: RefCell<Vec<(String, Change)>>,
     paused: Cell<usize>,
     out_of_time: Cell<bool>,
+    open_takes: Cell<Duration>,
+    send_deadline: Cell<Option<Duration>>,
 }
 
 type Tools = TplinkTools<Rc<Fake>>;
@@ -146,8 +149,12 @@ fn light_with(state: Value) -> Value {
 }
 
 impl Platform for Rc<Fake> {
-    async fn devices(&self) -> Result<(Vec<Listed>, Vec<String>), CliError> {
-        Ok((self.devices.borrow().clone(), self.gaps.borrow().clone()))
+    async fn devices(&self) -> Result<Fetched, CliError> {
+        Ok(Fetched {
+            devices: self.devices.borrow().clone(),
+            gaps: self.gaps.borrow().clone(),
+            unseen: self.unseen.borrow().clone(),
+        })
     }
 
     async fn sys_info(&self, _device: &Listed) -> Result<Value, CliError> {
@@ -185,6 +192,7 @@ impl Source for Rc<Fake> {
 
     fn open(&self) -> Result<Rc<Fake>, CliError> {
         self.opened.set(self.opened.get() + 1);
+        std::thread::sleep(self.open_takes.get());
         if let Some(e) = self.open_fails.borrow_mut().take() {
             return Err(e);
         }
@@ -193,6 +201,10 @@ impl Source for Rc<Fake> {
 
     fn pause(&self, _how_long: Duration) {
         self.paused.set(self.paused.get() + 1);
+    }
+
+    fn send_deadline(&self) -> Duration {
+        self.send_deadline.get().unwrap_or(SEND_DEADLINE)
     }
 
     fn read_back_deadline(&self) -> Duration {
@@ -931,6 +943,28 @@ fn a_read_back_past_the_deadline_is_skipped_and_said() {
     assert!(note.contains("do not send it again"), "{note}");
 }
 
+/// A keychain prompt answered after `--http` gave up on the call must not switch a device, because
+/// nobody is left to be told.
+#[test]
+fn a_call_that_reaches_the_command_past_the_deadline_sends_nothing() {
+    let (tools, fake) = home();
+    fake.open_takes.set(Duration::from_millis(20));
+    fake.send_deadline.set(Some(Duration::from_millis(10)));
+    let text = failed(&tools, POWER_TOOL, json!({"device": PLUG, "power": "off"}));
+    assert!(text.starts_with("upstream:"), "{text}");
+    assert!(text.contains("nothing was sent"), "{text}");
+    assert_eq!(fake.sent(), []);
+    assert_eq!(fake.state_reads.get(), 0);
+
+    let text = failed(
+        &tools,
+        LIGHT_TOOL,
+        json!({"device": LIGHT, "brightness": 40}),
+    );
+    assert!(text.contains("nothing was sent"), "{text}");
+    assert_eq!(fake.sent(), []);
+}
+
 const PATIENCE_LIMIT: u64 = 120;
 
 /// The sum the comment on `PATIENCE` makes, held to the limit it names.
@@ -940,7 +974,8 @@ fn a_write_can_answer_inside_the_http_limit() {
     let listing = PATIENCE.listing.unwrap().as_secs() + per_request * 2;
     let command = per_request;
     let last_read_back_starts = READ_BACK_DEADLINE.as_secs();
-    assert!(listing + command <= last_read_back_starts, "{listing}");
+    assert!(listing <= SEND_DEADLINE.as_secs(), "{listing}");
+    assert!(SEND_DEADLINE.as_secs() + command <= last_read_back_starts);
     assert!(last_read_back_starts + per_request + 2 < PATIENCE_LIMIT);
 }
 
@@ -1063,6 +1098,8 @@ enum Control {
     Hang,
     /// The cloud says no, in its own words.
     Refuse,
+    /// The cloud says no, in HTTP's: nothing was applied.
+    Forbidden,
 }
 
 #[derive(Default)]
@@ -1072,6 +1109,8 @@ struct StubState {
     /// The token a list is accepted with; any other is told it expired.
     valid_token: String,
     control: Control,
+    /// List one strip with `status: 0`.
+    offline_strip: bool,
     /// The refresh answer's new refresh token.
     rotate_to: Option<String>,
 }
@@ -1177,13 +1216,20 @@ fn stub_answer(state: &Mutex<StubState>, base: &str, path: &str, body: &Value) -
                 json!({"deviceId": id, "alias": alias, "deviceModel": model, "status": 1,
                        "appServerUrl": base})
             };
-            Reply::Json(
-                json!({"error_code": 0, "result": {"deviceList": [
-                    device(PLUG_ID, PLUG, "HS105(US)"),
-                    device("0000000000000000000000000000000000000007", LOCK, "DL110(US)"),
-                ]}})
-                .to_string(),
-            )
+            let mut list = vec![
+                device(PLUG_ID, PLUG, "HS105(US)"),
+                device(
+                    "0000000000000000000000000000000000000007",
+                    LOCK,
+                    "DL110(US)",
+                ),
+            ];
+            if state.offline_strip {
+                let mut strip = device(OFFLINE_STRIP_ID, OFFLINE_STRIP, "HS300(US)");
+                strip["status"] = json!(0);
+                list.push(strip);
+            }
+            Reply::Json(json!({"error_code": 0, "result": {"deviceList": list}}).to_string())
         }
         Some("passthrough") => {
             let inner: Value = body["params"]["requestData"]
@@ -1206,6 +1252,7 @@ fn stub_answer(state: &Mutex<StubState>, base: &str, path: &str, body: &Value) -
                     Control::Refuse => Reply::Json(
                         json!({"error_code": -20571, "msg": "Device is offline"}).to_string(),
                     ),
+                    Control::Forbidden => Reply::Status(403, "{}".to_string()),
                 };
             }
             let mut info = sys_info_of("hs103_get_sys_info_response.json");
@@ -1218,6 +1265,9 @@ fn stub_answer(state: &Mutex<StubState>, base: &str, path: &str, body: &Value) -
         }
     }
 }
+
+const OFFLINE_STRIP: &str = "Garage Strip";
+const OFFLINE_STRIP_ID: &str = "0000000000000000000000000000000000000009";
 
 fn dummy_session(url: &str, token: &str) -> TokenSet {
     TokenSet {
@@ -1430,6 +1480,55 @@ fn a_cloud_that_refuses_a_command_is_an_error_with_no_read_back() {
         !seen
             .iter()
             .any(|r| r.what["system"].get("get_sysinfo").is_some()),
+        "{seen:?}"
+    );
+}
+
+/// HTTP saying no is an answer too. Only a 5xx can have lost one.
+#[test]
+fn a_cloud_that_forbids_a_command_is_an_error_with_no_read_back() {
+    let (url, stub) = stub_clouds();
+    stub.lock().unwrap().control = Control::Forbidden;
+    let (tools, _) = live(&url, "kasa-token-dummy");
+    let got = call(&tools, POWER_TOOL, json!({"device": PLUG, "power": "on"}));
+    assert!(got.is_error(), "{}", got.text());
+    assert!(got.text().starts_with("upstream:"), "{}", got.text());
+    let seen = stub.lock().unwrap().seen.clone();
+    assert!(
+        !seen
+            .iter()
+            .any(|r| r.what["system"].get("get_sysinfo").is_some()),
+        "{seen:?}"
+    );
+}
+
+/// One strip left unplugged for weeks must not stop every write by name: it is not asked for its
+/// outlets, which saves the wait, and the result says so.
+#[test]
+fn a_strip_the_cloud_lists_as_offline_stops_nothing_and_is_said() {
+    let (url, stub) = stub_clouds();
+    stub.lock().unwrap().offline_strip = true;
+    let (tools, _) = live(&url, "kasa-token-dummy");
+
+    let got = call(&tools, POWER_TOOL, json!({"device": PLUG, "power": "on"}));
+    let got = assert_fits(&tools, POWER_TOOL, &got);
+    assert_eq!(got["confirmed"], true, "{got}");
+    assert!(
+        got["note"].as_str().unwrap().contains(OFFLINE_STRIP),
+        "{got}"
+    );
+    assert_eq!(stub.lock().unwrap().relay, 1);
+
+    let got = call(&tools, DEVICES_TOOL, json!({}));
+    let got = assert_fits(&tools, DEVICES_TOOL, &got);
+    assert!(
+        got["note"].as_str().unwrap().contains(OFFLINE_STRIP),
+        "{got}"
+    );
+    let seen = stub.lock().unwrap().seen.clone();
+    assert!(
+        !seen.iter().any(|r| r.what.to_string().contains("children")
+            || r.what.to_string().contains(OFFLINE_STRIP_ID)),
         "{seen:?}"
     );
 }

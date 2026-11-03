@@ -42,8 +42,14 @@ on the next. A tool never prompts for a password, moves a legacy session or crea
 no session is an error asking the user to run `tplc auth login` in a terminal. It does write the
 session back after a renewal, because a refresh can retire the old token, and it does that under a lock
 in `~/.config/tplc/token-refresh.lock` shared with every other `tplc` process. On macOS a binary the
-keychain has not granted raises a prompt on a call, and a server left unattended waits on it. The
-Claude Desktop extension is such a binary, with a grant of its own.
+keychain has not granted raises a prompt on a call, and a server left unattended waits on it. A write
+that reaches its command 75 s or more after the call began sends nothing and says so, so a prompt
+answered late cannot switch a device. The Claude Desktop extension is such a binary, with a grant of
+its own.
+
+A write by name is refused while a cloud's list or an answering strip's outlets are missing, because
+the name could mean a device in the missing part. A strip the cloud lists as offline does not count: a
+result names it in `note`, and a name shared with an outlet on it reaches the device that is online.
 
 The extension and the release have no Windows build, because the session is unmeasured against
 Windows's 2,560-byte credential limit, and a session too long for it would fail at the first sign-in.

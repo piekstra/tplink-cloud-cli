@@ -341,7 +341,7 @@ pub fn status(ctx: &Ctx<'_>) -> Result<(), CliError> {
     Ok(())
 }
 
-pub fn logout(ctx: &Ctx<'_>, args: &LogoutArgs) -> Result<(), CliError> {
+pub fn logout(ctx: &Ctx<'_>, args: &LogoutArgs) -> Result<i32, CliError> {
     // The delete runs with or without the lock; a renewal in flight must not store the session
     // again behind it.
     RefreshLock::forget_for_binary(crate::BIN, || ctx.sessions.clear())?;
@@ -358,23 +358,14 @@ pub fn logout(ctx: &Ctx<'_>, args: &LogoutArgs) -> Result<(), CliError> {
         ctx.store.clear()?;
     }
     if ctx.json {
-        let mut report = json!({
-            "schema": "auth-logout/v1",
-            "status": "logged_out",
-            "forgot": args.forget,
-        });
-        if args.forget {
-            // True also when there was none.
-            report["connector_token_removed"] = json!(token_left.is_none());
-        }
+        let (report, code) = logout_report(args.forget, token_left.as_ref());
         output::json(&report);
         // The logout happened and this is its one document, so the leftover token is a line on
         // stderr and the exit code: an error returned from here would print a second document.
         if let Some(left) = token_left {
             eprintln!("error: {left}");
-            std::process::exit(left.exit_code());
         }
-        return Ok(());
+        return Ok(code);
     }
     if let Some(left) = token_left {
         return Err(left);
@@ -389,7 +380,21 @@ pub fn logout(ctx: &Ctx<'_>, args: &LogoutArgs) -> Result<(), CliError> {
             );
         }
     }
-    Ok(())
+    Ok(0)
+}
+
+/// The one `auth-logout/v1` document, and the exit code that goes with it.
+fn logout_report(forget: bool, token_left: Option<&CliError>) -> (Value, i32) {
+    let mut report = json!({
+        "schema": "auth-logout/v1",
+        "status": "logged_out",
+        "forgot": forget,
+    });
+    if forget {
+        // True also when there was none.
+        report["connector_token_removed"] = json!(token_left.is_none());
+    }
+    (report, token_left.map_or(0, CliError::exit_code))
 }
 
 /// The stored secret is a session minted by the cloud, not a credential a
@@ -399,4 +404,29 @@ pub fn set_credential(_args: &SetCredentialArgs) -> Result<(), CliError> {
     Err(CliError::Usage(
         "tplc stores a login session, not a raw credential; run `tplc auth login --stdin --username you@example.com` (password on stdin) instead".into(),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A failed delete cannot be arranged here without a real keychain, so the document and the
+    /// code are held at the seam that makes them.
+    #[test]
+    fn a_leftover_connector_token_is_in_the_one_document_and_the_exit_code() {
+        let left = CliError::Keychain("dummy failure".into());
+        let (report, code) = logout_report(true, Some(&left));
+        assert_eq!(report["connector_token_removed"], false);
+        assert_eq!(report["status"], "logged_out");
+        assert_eq!(code, left.exit_code());
+        assert_ne!(code, 0);
+
+        let (report, code) = logout_report(true, None);
+        assert_eq!(report["connector_token_removed"], true);
+        assert_eq!(code, 0);
+
+        let (report, code) = logout_report(false, None);
+        assert!(report.get("connector_token_removed").is_none(), "{report}");
+        assert_eq!(code, 0);
+    }
 }

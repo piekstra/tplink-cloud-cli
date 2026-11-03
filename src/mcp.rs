@@ -31,7 +31,7 @@ use serde_json::Value;
 use crate::error::AppError;
 use crate::models::device::Device;
 use crate::models::device_type::DeviceType;
-use crate::resolve::{self, Listed, Patience};
+use crate::resolve::{self, Fetched, Listed, Patience};
 use crate::session::{SecretItems, Sessions, TokenSet};
 
 pub const DEVICES_TOOL: &str = "tplink_devices";
@@ -50,7 +50,14 @@ const READ_BACK_WAITS: [Duration; 2] = [Duration::from_millis(300), Duration::fr
 const PATIENCE: Patience = Patience {
     request: Duration::from_secs(15),
     listing: Some(Duration::from_secs(40)),
+    asks_offline_strips: false,
 };
+
+/// No command is sent this long after the call began. What comes before it can wait on a keychain
+/// prompt or a lock for as long as nobody answers, and `--http` has by then told the caller it gave
+/// up, so a late command would switch a device nobody is expecting to change. A command sent just
+/// inside this still has its request's 15 s before `READ_BACK_DEADLINE`.
+const SEND_DEADLINE: Duration = Duration::from_secs(75);
 
 /// No read-back starts this long after the call began.
 const READ_BACK_DEADLINE: Duration = Duration::from_secs(90);
@@ -123,7 +130,7 @@ pub enum Sent {
 #[allow(async_fn_in_trait)] // no Send bound: the executor polls on the calling thread
 pub trait Platform {
     /// Every device and outlet, and a sentence for each part that could not be read.
-    async fn devices(&self) -> Result<(Vec<Listed>, Vec<String>), CliError>;
+    async fn devices(&self) -> Result<Fetched, CliError>;
     /// The device's own `get_sysinfo` (an outlet's record, for an outlet).
     async fn sys_info(&self, device: &Listed) -> Result<Value, CliError>;
     async fn energy(&self, device: &Listed, period: Period) -> Result<Value, CliError>;
@@ -136,6 +143,10 @@ pub trait Source {
     /// A client with the session as it is now.
     fn open(&self) -> Result<Self::Api, CliError>;
     fn pause(&self, how_long: Duration);
+    /// How long after a call began its command may still go.
+    fn send_deadline(&self) -> Duration {
+        SEND_DEADLINE
+    }
     /// How long after a call began a read-back may still start.
     fn read_back_deadline(&self) -> Duration {
         READ_BACK_DEADLINE
@@ -182,16 +193,15 @@ fn refusal_in(answer: &Value) -> Result<(), CliError> {
 }
 
 impl<S: SecretItems> Platform for LivePlatform<S> {
-    async fn devices(&self) -> Result<(Vec<Listed>, Vec<String>), CliError> {
+    async fn devices(&self) -> Result<Fetched, CliError> {
         let mut tokens = self.tokens.borrow_mut();
-        let fetched = self.runtime.block_on(resolve::fetch_devices(
+        self.runtime.block_on(resolve::fetch_devices(
             &self.sessions,
             &mut tokens,
             true,
             false,
             self.patience,
-        ))?;
-        Ok((fetched.devices, fetched.gaps))
+        ))
     }
 
     async fn sys_info(&self, device: &Listed) -> Result<Value, CliError> {
@@ -678,8 +688,9 @@ impl<S: Source> TplinkTools<S> {
         )?;
         let detailed = args.list.format().is_detailed();
         let api = self.source.open().map_err(tool_err)?;
-        let (devices, gaps) = api.devices().await.map_err(tool_err)?;
-        let matched: Vec<DeviceItem> = devices
+        let fetched = api.devices().await.map_err(tool_err)?;
+        let matched: Vec<DeviceItem> = fetched
+            .devices
             .iter()
             .filter(|d| {
                 name.as_deref()
@@ -689,30 +700,30 @@ impl<S: Source> TplinkTools<S> {
             .collect();
         ToolOutput::new(&DevicesResult {
             page: page.page(matched, "name")?,
-            note: (!gaps.is_empty()).then(|| gaps.join(" ")),
+            note: fetched.note(),
         })
     }
 
     async fn state(&self, args: StateArgs) -> Result<ToolOutput, ToolError> {
         let detailed = args.response_format.unwrap_or_default().is_detailed();
         let api = self.source.open().map_err(tool_err)?;
-        let (devices, gaps) = api.devices().await.map_err(tool_err)?;
-        let device = resolve::pick(&devices, &args.device).map_err(tool_err)?;
+        let fetched = api.devices().await.map_err(tool_err)?;
+        let device = resolve::pick(&fetched.devices, &args.device).map_err(tool_err)?;
         let mut state = if device.is_online() {
             let raw = api.sys_info(device).await.map_err(tool_err)?;
             read_state(device, &raw, detailed).map_err(tool_err)?
         } else {
             offline_state(device, detailed)
         };
-        state.note = gaps_note(&gaps);
+        state.note = fetched.note();
         ToolOutput::new(&state)
     }
 
     async fn energy(&self, args: EnergyArgs) -> Result<ToolOutput, ToolError> {
         let period = wanted_period(&args).map_err(tool_err)?;
         let api = self.source.open().map_err(tool_err)?;
-        let (devices, gaps) = api.devices().await.map_err(tool_err)?;
-        let device = resolve::pick(&devices, &args.device).map_err(tool_err)?;
+        let fetched = api.devices().await.map_err(tool_err)?;
+        let device = resolve::pick(&fetched.devices, &args.device).map_err(tool_err)?;
         if !device.dtype.has_emeter() {
             return Err(tool_err(CliError::Usage(format!(
                 "`{}` has no energy meter; tplink_devices says which do",
@@ -721,7 +732,7 @@ impl<S: Source> TplinkTools<S> {
         }
         let raw = api.energy(device, period).await.map_err(tool_err)?;
         let mut result = read_energy(device, period, &raw).map_err(tool_err)?;
-        result.note = gaps_note(&gaps);
+        result.note = fetched.note();
         ToolOutput::new(&result)
     }
 
@@ -730,20 +741,35 @@ impl<S: Source> TplinkTools<S> {
     async fn change(&self, query: &str, change: Change) -> Result<ToolOutput, ToolError> {
         let started = Instant::now();
         let api = self.source.open().map_err(tool_err)?;
-        let (devices, gaps) = api.devices().await.map_err(tool_err)?;
-        let device = named_device(&devices, query).map_err(tool_err)?;
-        check_may_change(device, change, &devices).map_err(tool_err)?;
+        let fetched = api.devices().await.map_err(tool_err)?;
+        let device = named_device(&fetched.devices, query).map_err(tool_err)?;
+        check_may_change(device, change, &fetched.devices).map_err(tool_err)?;
         // A name that is unique in part of the list may not be unique in all of it, and the
-        // prompt would look the same either way. An id is unique.
-        if !gaps.is_empty() && !is_its_id(device, query) {
+        // prompt would look the same either way. An id is unique. A strip that is offline does
+        // not count: it can stay so for weeks, and an outlet on it could not take this anyway.
+        if !fetched.gaps.is_empty() && !is_its_id(device, query) {
             return Err(tool_err(CliError::Upstream(format!(
                 "nothing was sent, because the list is incomplete and the name could mean another \
-                 device in what is missing: {} Pass its device_id, or try again.",
-                gaps.join(" ")
+                 device in what is missing: {} Call again once that is back, or pass the device's \
+                 device_id from {DEVICES_TOOL}; an outlet has none.",
+                fetched.gaps.join(" ")
+            ))));
+        }
+        if started.elapsed() >= self.source.send_deadline() {
+            return Err(tool_err(CliError::Upstream(format!(
+                "nothing was sent: this call waited over {} s to reach the command, on a keychain \
+                 prompt, a lock or a slow list, and its caller may have stopped waiting. Call it \
+                 again if the change is still wanted.",
+                self.source.send_deadline().as_secs()
             ))));
         }
         let sent = api.control(device, change).await.map_err(tool_err)?;
-        ToolOutput::new(&self.read_back(&api, device, change, sent, started).await)
+        let mut done = self.read_back(&api, device, change, sent, started).await;
+        done.note = [done.note.take(), fetched.note()]
+            .into_iter()
+            .flatten()
+            .reduce(|a, b| format!("{a} {b}"));
+        ToolOutput::new(&done)
     }
 
     /// The state after a command. The command has gone: a failure here says so and is not a
@@ -810,10 +836,6 @@ fn unconfirmed_note(sent: &Sent, failure: Option<&CliError>) -> String {
         Some(e) => format!("{took}, and reading the state failed: {e}. {check}."),
         None => format!("{took}, and still reports the previous value. {check}."),
     }
-}
-
-fn gaps_note(gaps: &[String]) -> Option<String> {
-    (!gaps.is_empty()).then(|| gaps.join(" "))
 }
 
 /// A filter as given, trimmed and lowered; blank is no filter.

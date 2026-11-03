@@ -10,7 +10,7 @@ apps: the signed v2 account cloud (login, device list, device passthrough),
 the Kasa IoT cloud (device groups), and the Tapo NBU app-server (homes and
 rooms). A thin, TP-Link-specific layer over the shared
 [`cli-common`](https://github.com/piekstra/cli-common) `pk-cli-*` crates
-(**v0.22.0**: output, errors, confirm gate, reference ladder, keychain items,
+(**v0.23.0**: output, errors, confirm gate, reference ladder, keychain items,
 config, self-update, auth shapes, refresh lock, mcp). This repo owns only the vendor clients,
 the device models, and the commands.
 
@@ -96,7 +96,7 @@ a strip, a model `DeviceType` does not know and an offline device (`check_may_ch
 No tool removes or unpairs a device, changes an account, a schedule, a room, a group, the LED or
 firmware, shares access, or reaches `tplc api`, whatever the CLI can do. A `get_sysinfo` answer carries
 the device's MAC address and coordinates: `read_state` copies named fields only, and must go on doing so.
-A write by name is refused while `Fetched.gaps` is non-empty. `resolve::Patience` keeps a whole call
+A write by name is refused while `Fetched.gaps` is non-empty. A strip the cloud lists as offline is in `Fetched.unseen`: the MCP path does not ask it for its outlets, says so in `note`, and goes on, accepting that a name shared with an outlet on it reaches the online device. No command goes out 75 s after the call began (`SEND_DEADLINE`), which also covers a keychain prompt answered late. `resolve::Patience` keeps a whole call
 inside the 120 s `--http` gives it. Every write of the session item outside a sign-in goes through
 `RefreshLock`; a copy read earlier can carry a retired refresh token, so `Sessions::store` is not for
 a cache (see `remember_app_server`).

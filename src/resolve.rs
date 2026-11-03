@@ -97,21 +97,41 @@ pub struct Patience {
     pub request: Duration,
     /// Once this has passed, no further strip's outlets are asked for.
     pub listing: Option<Duration>,
+    /// Whether a strip the cloud lists as offline is asked for its outlets anyway, in case the
+    /// list is behind.
+    pub asks_offline_strips: bool,
 }
 
 impl Patience {
     pub const CLI: Patience = Patience {
         request: PASSTHROUGH_TIMEOUT,
         listing: None,
+        asks_offline_strips: true,
     };
 }
 
 /// The devices both clouds list, and what could not be read of them.
 pub struct Fetched {
     pub devices: Vec<Listed>,
-    /// A cloud or a strip's outlets that are missing, in a sentence. A reader told "these are
-    /// your devices" can be told this too.
+    /// A cloud or an answering strip's outlets that are missing, in a sentence. A reader told
+    /// "these are your devices" can be told this too, and what is missing could take a command.
     pub gaps: Vec<String>,
+    /// Strips the cloud lists as offline, whose outlets were not asked for, in a sentence. An
+    /// outlet there takes no command until the strip is back, so this is said and stops nothing.
+    pub unseen: Vec<String>,
+}
+
+impl Fetched {
+    /// What a reader should be told about the list, if anything.
+    pub fn note(&self) -> Option<String> {
+        let parts: Vec<&str> = self
+            .gaps
+            .iter()
+            .chain(&self.unseen)
+            .map(String::as_str)
+            .collect();
+        (!parts.is_empty()).then(|| parts.join(" "))
+    }
 }
 
 /// Every device (and outlet) `tokens` can see, refreshing them as needed. Kasa is required;
@@ -144,13 +164,23 @@ pub async fn fetch_devices<S: SecretItems>(
                         .filter(|d| !seen.contains(d.info.id())),
                 );
                 fetched.gaps.extend(tapo.gaps);
+                fetched.unseen.extend(tapo.unseen);
             }
-            Err(e) => fetched
-                .gaps
-                .push(format!("Tapo's device list could not be read: {e}")),
+            Err(e) => fetched.gaps.push(tapo_gap(&e)),
         }
     }
     Ok(fetched)
+}
+
+/// Tapo's list failing, with what to do about it. A retry does nothing for a lapsed session.
+fn tapo_gap(e: &CliError) -> String {
+    let text = e.to_string();
+    let remedy = if matches!(e, CliError::Auth(_)) && !text.contains("auth login") {
+        " Run `tplc auth login` in a terminal."
+    } else {
+        ""
+    };
+    format!("Tapo's device list could not be read: {text}{remedy}")
 }
 
 /// One discovery's settings, and when it began.
@@ -197,6 +227,7 @@ async fn fetch_cloud<S: SecretItems>(
 
     let mut devices = Vec::new();
     let mut gaps = Vec::new();
+    let mut unseen = Vec::new();
     for device_json in &device_list {
         let Some(info) = DeviceInfo::from_cloud(device_json, cloud) else {
             continue;
@@ -209,6 +240,13 @@ async fn fetch_cloud<S: SecretItems>(
             child_alias: None,
         });
         if expand_children && dtype.has_children() {
+            if info.status == Some(0) && !patience.asks_offline_strips {
+                unseen.push(format!(
+                    "The outlets of `{}` were not read, because it is offline.",
+                    info.alias_or_name()
+                ));
+                continue;
+            }
             if wait.out_of_time() {
                 gaps.push(format!(
                     "The outlets of `{}` were not read, for lack of time.",
@@ -244,7 +282,11 @@ async fn fetch_cloud<S: SecretItems>(
             }
         }
     }
-    Ok(Fetched { devices, gaps })
+    Ok(Fetched {
+        devices,
+        gaps,
+        unseen,
+    })
 }
 
 /// Resolve a device by name or id across both clouds. Ladder:
@@ -318,6 +360,16 @@ pub(crate) fn build_device_waiting(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_lapsed_tapo_session_names_the_sign_in_once() {
+        let lapsed = tapo_gap(&CliError::Auth("the session lapsed".into()));
+        assert!(lapsed.contains("`tplc auth login`"), "{lapsed}");
+        let told = tapo_gap(&CliError::Auth("run `tplc auth login`".into()));
+        assert_eq!(told.matches("auth login").count(), 1, "{told}");
+        let down = tapo_gap(&CliError::Upstream("down".into()));
+        assert!(!down.contains("auth login"), "{down}");
+    }
 
     fn listed(id: &str, alias: &str, model: &str, child: Option<(&str, &str)>) -> Listed {
         let info = DeviceInfo::from_json(&json!({

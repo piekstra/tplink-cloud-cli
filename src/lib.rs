@@ -123,7 +123,7 @@ async fn dispatch(
         }
         Command::Auth(AuthCmd::Status) | Command::Status => cli::auth::status(ctx)?,
         Command::Auth(AuthCmd::Logout(args)) | Command::Logout(args) => {
-            cli::auth::logout(ctx, args)?
+            return cli::auth::logout(ctx, args)
         }
         Command::Devices(cmd) => cli::devices::handle(ctx, cmd).await?,
         Command::Power(cmd) => cli::power::handle(ctx, cmd).await?,
