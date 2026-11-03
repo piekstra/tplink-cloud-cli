@@ -682,8 +682,12 @@ mod tests {
                 .send()
                 .await
         });
-        assert!(sent.is_err());
+        let err = AppError::from(sent.unwrap_err());
         assert!(arrived.lock().unwrap().is_empty());
+        assert!(matches!(err, AppError::Api { .. }), "{err}");
+        let text = CliError::from(err);
+        assert_eq!(text.exit_code(), 5);
+        assert!(text.to_string().contains("another host"), "{text}");
     }
 
     #[test]

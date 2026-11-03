@@ -8,7 +8,8 @@
   address elsewhere is an upstream failure, exit 5, and nothing is sent to it.
 - **Security fix:** no client follows a redirect off its host. The token is in the query and the password
   or refresh token in the body, which a 307 or 308 re-sends, and reqwest strips neither. A redirect to
-  another host is now an error.
+  another host is now an error that says so, and a write refused this way is reported as a failure, not
+  as an unknown outcome.
 - A write's deadlines are now cli-common's `SendDeadline`, with the same 75 s to send and 90 s to start
   a read-back, on both clocks. Its refusal is an `other` error in place of `upstream`, since TP-Link did
   not fail, and it tells the caller to check the current state before calling again.
