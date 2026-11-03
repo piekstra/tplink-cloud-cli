@@ -4,6 +4,9 @@ name: Release
 # no matching `v<version>` git tag yet, this builds per-platform binaries and
 # publishes a release (creating the tag at the merge commit). So cutting a
 # release is just: bump `version` in Cargo.toml and merge — no manual tagging.
+# The Homebrew formula follows through a pull request on piekstra/homebrew-tap
+# (branch `formula/tplc-v<version>`), which needs the piekstra-dev review and
+# a merge before `brew` sees the release.
 # Can also be run by hand from the Actions tab (workflow_dispatch).
 #
 # Assets are `tplc-<target>.tar.gz` (+ `.sha256`), exactly the name
@@ -101,7 +104,10 @@ jobs:
           fail_on_unmatched_files: true
 
   # Keep `brew install piekstra/tap/tplc` working: point the formula at the
-  # new tarballs. Skipped (not failed) when the tap token isn't configured.
+  # new tarballs. The tap's main takes changes only through a reviewed pull
+  # request, so this opens one; brew sees the release once piekstra-dev
+  # approves it and it merges. Skipped (not failed) when the tap token isn't
+  # configured. TAP_TOKEN needs contents and pull-request write on the tap.
   homebrew:
     name: update homebrew tap
     needs: [check, release]
@@ -154,12 +160,41 @@ jobs:
             end
           end
           RUBY
-          CONTENT=$(base64 -w0 /tmp/tplc.rb)
-          EXISTING_SHA=$(gh api repos/piekstra/homebrew-tap/contents/Formula/tplc.rb --jq '.sha' 2>/dev/null || echo "")
-          if [ -n "$EXISTING_SHA" ]; then
-            gh api repos/piekstra/homebrew-tap/contents/Formula/tplc.rb -X PUT \
-              -f message="Update tplc to v${VERSION}" -f content="${CONTENT}" -f sha="${EXISTING_SHA}"
-          else
-            gh api repos/piekstra/homebrew-tap/contents/Formula/tplc.rb -X PUT \
-              -f message="Add tplc v${VERSION}" -f content="${CONTENT}"
+          # One branch per release, cut from main, so the pull request never
+          # conflicts; an earlier release's PR still open is closed in favour
+          # of this one, leaving at most one formula PR waiting. `gh api`
+          # prints a 404's body to stdout, hence `|| VAR=""` outside `$()`.
+          TAP=piekstra/homebrew-tap
+          FILE=Formula/tplc.rb
+          BRANCH="formula/tplc-v${VERSION}"
+          NEW_BLOB=$(git hash-object /tmp/tplc.rb)
+          MAIN_BLOB=$(gh api "repos/$TAP/contents/$FILE" --jq .sha 2>/dev/null) || MAIN_BLOB=""
+          if [ "$NEW_BLOB" = "$MAIN_BLOB" ]; then
+            echo "The tap already has tplc v${VERSION}"
+            exit 0
           fi
+          if ! gh api "repos/$TAP/git/ref/heads/$BRANCH" >/dev/null 2>&1; then
+            MAIN_SHA=$(gh api "repos/$TAP/git/ref/heads/main" --jq .object.sha)
+            gh api "repos/$TAP/git/refs" -f ref="refs/heads/$BRANCH" -f sha="$MAIN_SHA" >/dev/null
+          fi
+          BRANCH_BLOB=$(gh api "repos/$TAP/contents/$FILE?ref=$BRANCH" --jq .sha 2>/dev/null) || BRANCH_BLOB=""
+          if [ "$NEW_BLOB" != "$BRANCH_BLOB" ]; then
+            CONTENT=$(base64 < /tmp/tplc.rb | tr -d '\n')
+            if [ -n "$BRANCH_BLOB" ]; then
+              gh api -X PUT "repos/$TAP/contents/$FILE" -f message="tplc ${VERSION}" \
+                -f content="$CONTENT" -f branch="$BRANCH" -f sha="$BRANCH_BLOB" >/dev/null
+            else
+              gh api -X PUT "repos/$TAP/contents/$FILE" -f message="tplc ${VERSION}" \
+                -f content="$CONTENT" -f branch="$BRANCH" >/dev/null
+            fi
+          fi
+          PR=$(gh pr list -R "$TAP" --head "$BRANCH" --state open --json url --jq '.[0].url // empty')
+          if [ -z "$PR" ]; then
+            PR=$(gh pr create -R "$TAP" --head "$BRANCH" --base main --title "tplc ${VERSION}" \
+              --body "Moves the tplc formula to https://github.com/piekstra/tplink-cloud-cli/releases/tag/v${VERSION}. Opened by the tplink-cloud-cli release workflow; each sha256 is the one that release published.")
+          fi
+          for N in $(gh pr list -R "$TAP" --state open --json number,headRefName \
+              --jq ".[] | select(.headRefName | startswith(\"formula/tplc-v\")) | select(.headRefName != \"$BRANCH\") | .number"); do
+            gh pr close "$N" -R "$TAP" --delete-branch --comment "Superseded by $PR."
+          done
+          echo "::notice title=Homebrew::$PR moves tplc to v${VERSION}; brew sees it after the piekstra-dev review and merge."
