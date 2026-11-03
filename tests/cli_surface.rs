@@ -454,6 +454,19 @@ fn completions_render_for_zsh_and_bash() {
         .stdout(predicate::str::contains("tplc"));
 }
 
+#[test]
+fn no_color_in_the_environment_never_fails_a_command() {
+    // Any non-empty NO_COLOR disables color, per no-color.org; read as a
+    // clap boolean, NO_COLOR=1 was a usage error on every command.
+    for v in ["1", "true", "0", ""] {
+        tplc()
+            .env("NO_COLOR", v)
+            .args(["completions", "bash"])
+            .assert()
+            .success();
+    }
+}
+
 /// Gated: reads the OS keychain. Run with `TPLC_TEST_KEYCHAIN=1` on a machine
 /// whose keychain holds no `tplc` session (a fresh CI box, a clean user).
 #[test]
