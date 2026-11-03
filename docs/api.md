@@ -89,7 +89,9 @@ code as a *string* or an int. `TPLinkApi::login` checks both levels.
    `tplc` process shares for this, reads the session again under it, takes
    another process's renewal when there is one, and writes the session once
    before the POST, so a keychain that refuses writes spends nothing. A server
-   and a terminal can hold the same expired token.
+   and a terminal can hold the same expired token. The Tapo app-server URL
+   cached in the session is written under the same lock, over the session as
+   it is then, so a command holding an older copy cannot restore a retired token.
 
 The session `tplc` stores (one keychain item, `piekstra.tplc/session`):
 Kasa `token`/`refresh_token`/`regional_url`, `username`, `term_id`, the Tapo

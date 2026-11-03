@@ -10,7 +10,7 @@
 //! |--------------------------------------------------|--------------|------|
 //! | `Auth`, `MfaRequired`, `TokenExpired`, `NotAuthenticated` | `Auth`  | 3 |
 //! | `DeviceNotFound`                                 | `NotFound`   | 4    |
-//! | `DeviceOffline`, `Api`, `Http`, `Json`           | `Upstream`   | 5    |
+//! | `DeviceOffline`, `Api`, `BadStatus`, `Http`, `Json` | `Upstream` | 5   |
 //! | `InvalidInput`, `UnsupportedOperation`           | `Usage`      | 2    |
 //! | `Io`                                             | `Other`      | 1    |
 
@@ -47,6 +47,10 @@ pub enum AppError {
         message: String,
         error_code: Option<i32>,
     },
+
+    /// A status with no cloud answer in it, such as a gateway's 502.
+    #[error("TP-Link cloud error: {status}: {body}")]
+    BadStatus { status: u16, body: String },
 
     #[error("not logged in; run `tplc auth login`")]
     NotAuthenticated,
@@ -104,6 +108,7 @@ impl From<AppError> for CliError {
             AppError::DeviceNotFound(_) => CliError::NotFound(msg),
             AppError::DeviceOffline(_)
             | AppError::Api { .. }
+            | AppError::BadStatus { .. }
             | AppError::Http(_)
             | AppError::Json(_) => CliError::Upstream(msg),
             AppError::InvalidInput(_) | AppError::UnsupportedOperation(_) => CliError::Usage(msg),

@@ -269,6 +269,26 @@ impl<S: SecretItems> Sessions<S> {
         self.store.get_json(SESSION_KEY)
     }
 
+    /// Cache the Tapo app-server URL in the session as it is now, under the lock a renewal holds.
+    /// A copy read earlier could carry a refresh token TP-Link has since retired, or a session
+    /// `auth logout` has since removed, so only these two fields come from this process.
+    pub fn remember_app_server(&self, url: &str, expires_at: u64) -> Result<(), CliError> {
+        self.renewal_lock()?.renew(
+            || {
+                self.stored()?
+                    .ok_or_else(|| AppError::NotAuthenticated.into())
+            },
+            |_| true,
+            |mut latest| {
+                latest.tapo_app_server_url = Some(url.to_string());
+                latest.tapo_app_server_expires_at = Some(expires_at);
+                self.store(&latest)?;
+                Ok(latest)
+            },
+        )?;
+        Ok(())
+    }
+
     /// Remove the bearer token of `tplc mcp --http`. `auth logout --forget` does this, so
     /// forgetting a CLI leaves nothing behind.
     pub fn forget_connector_token(&self) -> Result<bool, CliError> {
@@ -823,15 +843,46 @@ mod tests {
             .block_on(f)
     }
 
-    /// A renewal lock under the temp directory, never the real home.
-    fn sessions_with(store: MemStore) -> Sessions<MemStore> {
-        let lock = std::env::temp_dir().join(format!("tplc-session-{}", uuid::Uuid::new_v4()));
-        Sessions::with_stores(store, MemStore::new("tplc")).with_lock_at(lock)
+    /// A renewal lock in a directory of its own, never the real home. It goes with the directory.
+    fn sessions_with(store: MemStore) -> (Sessions<MemStore>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let lock = dir.path().join("token-refresh.lock");
+        (
+            Sessions::with_stores(store, MemStore::new("tplc")).with_lock_at(lock),
+            dir,
+        )
+    }
+
+    /// `rooms` read its copy before a renewal in another process stored a new token.
+    #[test]
+    fn remembering_the_app_server_keeps_the_session_as_it_is_now() {
+        let (sessions, _dir) =
+            sessions_with(MemStore::new("piekstra.tplc").with(SESSION_KEY, &blob("renewed")));
+        sessions
+            .remember_app_server("https://app-server.example.com", 1_700_000_000)
+            .unwrap();
+        let stored = sessions.stored().unwrap().unwrap();
+        assert_eq!(stored.token, "renewed");
+        assert_eq!(
+            stored.tapo_app_server_url.as_deref(),
+            Some("https://app-server.example.com")
+        );
+        assert_eq!(stored.tapo_app_server_expires_at, Some(1_700_000_000));
+    }
+
+    /// `auth logout` ran in between: the session stays gone.
+    #[test]
+    fn remembering_the_app_server_after_a_logout_stores_nothing() {
+        let (sessions, _dir) = sessions_with(MemStore::new("piekstra.tplc"));
+        assert!(sessions
+            .remember_app_server("https://app-server.example.com", 1_700_000_000)
+            .is_err());
+        assert!(sessions.store.keys().is_empty());
     }
 
     #[test]
     fn forgetting_the_connector_token_leaves_the_session() {
-        let sessions = sessions_with(
+        let (sessions, _dir) = sessions_with(
             MemStore::new("piekstra.tplc")
                 .with(SESSION_KEY, &blob("k"))
                 .with(pk_cli_mcp::HTTP_TOKEN_ACCOUNT, "dummy-connector-token"),
@@ -853,7 +904,7 @@ mod tests {
         let store = MemStore::new("piekstra.tplc")
             .with(SESSION_KEY, &serde_json::to_string(&stored).unwrap());
         store.fail_writes.set(true);
-        let sessions = sessions_with(store);
+        let (sessions, _dir) = sessions_with(store);
 
         let mut held = stored.clone();
         let err = block_on(refresh(&sessions, &mut held, CloudType::Kasa, false)).unwrap_err();
@@ -865,7 +916,7 @@ mod tests {
     /// no refresh token here for a grant to spend, so a grant would fail.
     #[test]
     fn a_session_another_process_renewed_is_taken_as_it_is() {
-        let sessions =
+        let (sessions, _dir) =
             sessions_with(MemStore::new("piekstra.tplc").with(SESSION_KEY, &blob("new")));
         let mut held = tokens("old");
         block_on(refresh(&sessions, &mut held, CloudType::Kasa, false)).unwrap();
@@ -875,7 +926,7 @@ mod tests {
     /// `logout` ran while this process held a token: it stays logged out.
     #[test]
     fn a_refresh_after_a_logout_does_not_store_the_session_again() {
-        let sessions = sessions_with(MemStore::new("piekstra.tplc"));
+        let (sessions, _dir) = sessions_with(MemStore::new("piekstra.tplc"));
         let mut held = tokens("k");
         let err = block_on(refresh(&sessions, &mut held, CloudType::Kasa, false)).unwrap_err();
         assert_eq!(err.exit_code(), 3);
@@ -884,7 +935,7 @@ mod tests {
 
     #[test]
     fn with_refresh_passes_success_and_other_errors_through_untouched() {
-        let sessions = sessions_with(MemStore::new("piekstra.tplc"));
+        let (sessions, _dir) = sessions_with(MemStore::new("piekstra.tplc"));
         let mut t = tokens("k");
         let calls = Cell::new(0);
         let ok = block_on(with_refresh(
@@ -925,7 +976,8 @@ mod tests {
     #[test]
     fn with_refresh_reports_the_refresh_failure_and_does_not_retry() {
         // No refresh token: refresh fails before any request.
-        let sessions = sessions_with(MemStore::new("piekstra.tplc").with(SESSION_KEY, &blob("k")));
+        let (sessions, _dir) =
+            sessions_with(MemStore::new("piekstra.tplc").with(SESSION_KEY, &blob("k")));
         let mut t = tokens("k");
         let calls = Cell::new(0);
         let err = block_on(with_refresh(

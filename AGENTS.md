@@ -96,6 +96,10 @@ a strip, a model `DeviceType` does not know and an offline device (`check_may_ch
 No tool removes or unpairs a device, changes an account, a schedule, a room, a group, the LED or
 firmware, shares access, or reaches `tplc api`, whatever the CLI can do. A `get_sysinfo` answer carries
 the device's MAC address and coordinates: `read_state` copies named fields only, and must go on doing so.
+A write by name is refused while `Fetched.gaps` is non-empty. `resolve::Patience` keeps a whole call
+inside the 120 s `--http` gives it. Every write of the session item outside a sign-in goes through
+`RefreshLock`; a copy read earlier can carry a retired refresh token, so `Sessions::store` is not for
+a cache (see `remember_app_server`).
 
 ## Releasing
 

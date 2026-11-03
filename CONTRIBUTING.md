@@ -18,7 +18,9 @@
 7. Adding a cloud: a `CloudType` variant with its host, keys, app type and
    passthrough envelope; the login flow in `src/cli/auth.rs` and the session
    in `src/session.rs`.
-8. Releasing: bump `version` in `Cargo.toml` (with a `CHANGELOG.md` entry) and
-   merge. `release.yml` tags, publishes, and opens a formula pull request on
+8. Releasing: bump `version` in `Cargo.toml` and `packaging/mcpb/manifest.json`,
+   add a `CHANGELOG.md` entry, merge, then push the tag `v<version>`.
+   `release.yml` checks the tag, crate and manifest agree, builds the tarballs
+   and the `.mcpb`, publishes, and opens a formula pull request on
    `piekstra/homebrew-tap`; run the piekstra-dev review on it and merge it, or
    `brew install piekstra/tap/tplc` keeps serving the previous version.

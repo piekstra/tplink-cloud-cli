@@ -345,25 +345,41 @@ pub fn logout(ctx: &Ctx<'_>, args: &LogoutArgs) -> Result<(), CliError> {
     // The delete runs with or without the lock; a renewal in flight must not store the session
     // again behind it.
     RefreshLock::forget_for_binary(crate::BIN, || ctx.sessions.clear())?;
+    let mut token_left = None;
     if args.forget {
         // Nothing records whether `mcp --new-token` ran, so this delete is ungated: a keyring that
         // is not running, or a prompt declined, must not leave the config behind it.
-        let token = ctx.sessions.forget_connector_token();
-        ctx.store.clear()?;
-        token.map_err(|failure| {
+        token_left = ctx.sessions.forget_connector_token().err().map(|failure| {
             CliError::Keychain(format!(
                 "the session and config are cleared, but the connector token of `tplc mcp --http` \
                  could not be removed, if there is one: {failure}"
             ))
-        })?;
+        });
+        ctx.store.clear()?;
     }
     if ctx.json {
-        output::json(&json!({
+        let mut report = json!({
             "schema": "auth-logout/v1",
             "status": "logged_out",
             "forgot": args.forget,
-        }));
-    } else if !ctx.quiet {
+        });
+        if args.forget {
+            // True also when there was none.
+            report["connector_token_removed"] = json!(token_left.is_none());
+        }
+        output::json(&report);
+        // The logout happened and this is its one document, so the leftover token is a line on
+        // stderr and the exit code: an error returned from here would print a second document.
+        if let Some(left) = token_left {
+            eprintln!("error: {left}");
+            std::process::exit(left.exit_code());
+        }
+        return Ok(());
+    }
+    if let Some(left) = token_left {
+        return Err(left);
+    }
+    if !ctx.quiet {
         if args.forget {
             eprintln!("logged out; connector token removed; config cleared");
         } else {

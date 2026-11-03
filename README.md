@@ -214,7 +214,9 @@ a lock or a camera, and an offline device is refused with nothing sent. Each ret
 back from the device, about 0.3 and 1.3 seconds later, with `confirmed`: `true` only when that state
 shows the change. If it does not, or the read fails, a `note` says so. That is not a failure, and
 Claude is told not to send the command again. If the command's own answer is lost, the state read
-back settles it the same way, and the `note` says the outcome is unknown until it does.
+back settles it the same way, and the `note` says the outcome is unknown until it does. While part of
+the device list cannot be read, such as the Tapo cloud or a strip's outlets, a write by name is refused
+with nothing sent, because the name could mean a device in the missing part. Its id still works.
 
 No tool can remove a device, edit a schedule, a room or a group, change a device's LED or firmware,
 change your account or share access, and none reaches `tplc api`. Toggling is left to the CLI, so a
@@ -226,7 +228,9 @@ answer of the wrong shape is an error, and a device list missing the Tapo cloud 
 says so in `note`. Each page reads TP-Link again, so a device added between pages can repeat or be
 skipped: for a count, read one call with `limit` up to 200. Device names are yours; the server tells
 Claude to treat them as data, not instructions. A device's MAC address and coordinates, which it
-reports alongside its state, never reach a result.
+reports alongside its state, never reach a result. Tools wait 15 seconds for each request, where the
+CLI waits 600, so a device the cloud is still trying to wake reads as a failure, or a `note`, and not
+as a long silence.
 
 The tools are worded for a model, so they differ from `--json`, which passes TP-Link's names through:
 `power: "on"` for `relay_state: 1` or `light_state.on_off: 1`, `power_w` for `power_mw`, `voltage_v` for

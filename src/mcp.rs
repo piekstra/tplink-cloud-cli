@@ -16,7 +16,7 @@
 //! shares (`session::refresh`). No tool moves a legacy session or creates a keychain item.
 
 use std::cell::RefCell;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use pk_cli_core::CliError;
 use pk_cli_mcp::{
@@ -31,7 +31,7 @@ use serde_json::Value;
 use crate::error::AppError;
 use crate::models::device::Device;
 use crate::models::device_type::DeviceType;
-use crate::resolve::{self, Listed};
+use crate::resolve::{self, Listed, Patience};
 use crate::session::{SecretItems, Sessions, TokenSet};
 
 pub const DEVICES_TOOL: &str = "tplink_devices";
@@ -43,6 +43,17 @@ pub const LIGHT_TOOL: &str = "tplink_light";
 /// How long before each read-back. The cloud relays a command to the device and answers with
 /// the device's reply, and a read straight after can still show the old value.
 const READ_BACK_WAITS: [Duration; 2] = [Duration::from_millis(300), Duration::from_secs(1)];
+
+/// What a call waits for. `--http` gives up on a call after 120 s, and a write's answer has to
+/// arrive before that to say what became of it: one list of up to 70 s (two clouds at 15 s each,
+/// and strips asked for during the first 40 s), a command, and a read-back.
+const PATIENCE: Patience = Patience {
+    request: Duration::from_secs(15),
+    listing: Some(Duration::from_secs(40)),
+};
+
+/// No read-back starts this long after the call began.
+const READ_BACK_DEADLINE: Duration = Duration::from_secs(90);
 
 /// Everything a tool can send to a device. Closed: nothing else reaches a device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -125,6 +136,10 @@ pub trait Source {
     /// A client with the session as it is now.
     fn open(&self) -> Result<Self::Api, CliError>;
     fn pause(&self, how_long: Duration);
+    /// How long after a call began a read-back may still start.
+    fn read_back_deadline(&self) -> Duration {
+        READ_BACK_DEADLINE
+    }
 }
 
 /// A call's own runtime and session. `reqwest`'s async client needs a Tokio context, which the
@@ -134,11 +149,12 @@ pub struct LivePlatform<S: SecretItems> {
     runtime: tokio::runtime::Runtime,
     sessions: Sessions<S>,
     tokens: RefCell<TokenSet>,
+    patience: Patience,
 }
 
 impl<S: SecretItems> LivePlatform<S> {
     fn device(&self, listed: &Listed) -> Result<Device, CliError> {
-        resolve::build_device(listed, &self.tokens.borrow(), false)
+        resolve::build_device_waiting(listed, &self.tokens.borrow(), false, self.patience.request)
     }
 }
 
@@ -173,6 +189,7 @@ impl<S: SecretItems> Platform for LivePlatform<S> {
             &mut tokens,
             true,
             false,
+            self.patience,
         ))?;
         Ok((fetched.devices, fetched.gaps))
     }
@@ -209,9 +226,10 @@ impl<S: SecretItems> Platform for LivePlatform<S> {
     }
 }
 
-/// A connection that never opened sent nothing, so it is a failure like any other. Any other
-/// transport failure may have come after the device took the command, and an error there reads
-/// as "try again" to a model, over whatever the user has changed since.
+/// A connection that never opened sent nothing, and a cloud or a device saying no is a refusal, so
+/// both are failures like any other. Any other failure to answer may have come after the device
+/// took the command (a timeout, a reset, a gateway's 5xx, a body that is not JSON), and an error
+/// there reads as "try again" to a model, over whatever the user has changed since.
 fn what_became_of(sent: Result<Option<Value>, AppError>) -> Result<Sent, CliError> {
     match sent {
         Ok(answer) => {
@@ -221,6 +239,10 @@ fn what_became_of(sent: Result<Option<Value>, AppError>) -> Result<Sent, CliErro
             Ok(Sent::Accepted)
         }
         Err(AppError::Http(e)) if !e.is_connect() => Ok(Sent::NoAnswer(e.to_string())),
+        Err(AppError::Json(e)) => Ok(Sent::NoAnswer(format!("the answer was not JSON: {e}"))),
+        Err(AppError::BadStatus { status, .. }) if status >= 500 => {
+            Ok(Sent::NoAnswer(format!("HTTP {status}")))
+        }
         Err(e) => Err(e.into()),
     }
 }
@@ -229,6 +251,7 @@ type OpenSessions<S> = Box<dyn Fn() -> Sessions<S> + Send + Sync>;
 
 pub struct LiveSource<S: SecretItems = CredentialStore> {
     sessions: OpenSessions<S>,
+    patience: Patience,
 }
 
 impl LiveSource {
@@ -248,7 +271,15 @@ impl<S: SecretItems> LiveSource<S> {
     pub fn over(sessions: impl Fn() -> Sessions<S> + Send + Sync + 'static) -> Self {
         Self {
             sessions: Box::new(sessions),
+            patience: PATIENCE,
         }
+    }
+
+    /// Waiting less than a tool does, so a test can outlast a request that never answers.
+    #[cfg(test)]
+    pub fn waiting(mut self, request: Duration) -> Self {
+        self.patience.request = request;
+        self
     }
 }
 
@@ -269,6 +300,7 @@ impl<S: SecretItems> Source for LiveSource<S> {
             runtime,
             sessions,
             tokens: RefCell::new(tokens),
+            patience: self.patience,
         })
     }
 
@@ -291,7 +323,7 @@ impl<S> TplinkTools<S> {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct DevicesArgs {
-    /// Only names containing this text.
+    /// A filter, not a target: only names containing this text.
     #[serde(default)]
     pub name: Option<String>,
     #[serde(flatten)]
@@ -322,7 +354,7 @@ pub struct EnergyArgs {
     #[serde(default)]
     #[schemars(range(min = 2000, max = 2100))]
     pub year: Option<i32>,
-    /// Month of year, 1 to 12.
+    /// Month of year, 1 to 12; needs year.
     #[serde(default)]
     #[schemars(range(min = 1, max = 12))]
     pub month: Option<u32>,
@@ -432,15 +464,15 @@ pub struct DeviceState {
     /// A strip's outlets.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub outlets: Vec<OutletState>,
-    /// Detailed only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub device_id: Option<String>,
-    /// Detailed only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    /// Detailed only: `kasa` or `tapo`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cloud: Option<String>,
+    /// What the list a name was looked up in may lack.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// One period of `tplink_energy`.
@@ -469,6 +501,9 @@ pub struct EnergyResult {
     /// The year's months, or the month's days.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub periods: Vec<EnergyRow>,
+    /// What the list a name was looked up in may lack.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// What a write returns.
@@ -661,19 +696,22 @@ impl<S: Source> TplinkTools<S> {
     async fn state(&self, args: StateArgs) -> Result<ToolOutput, ToolError> {
         let detailed = args.response_format.unwrap_or_default().is_detailed();
         let api = self.source.open().map_err(tool_err)?;
-        let (devices, _) = api.devices().await.map_err(tool_err)?;
+        let (devices, gaps) = api.devices().await.map_err(tool_err)?;
         let device = resolve::pick(&devices, &args.device).map_err(tool_err)?;
-        if !device.is_online() {
-            return ToolOutput::new(&offline_state(device, detailed));
-        }
-        let raw = api.sys_info(device).await.map_err(tool_err)?;
-        ToolOutput::new(&read_state(device, &raw, detailed).map_err(tool_err)?)
+        let mut state = if device.is_online() {
+            let raw = api.sys_info(device).await.map_err(tool_err)?;
+            read_state(device, &raw, detailed).map_err(tool_err)?
+        } else {
+            offline_state(device, detailed)
+        };
+        state.note = gaps_note(&gaps);
+        ToolOutput::new(&state)
     }
 
     async fn energy(&self, args: EnergyArgs) -> Result<ToolOutput, ToolError> {
         let period = wanted_period(&args).map_err(tool_err)?;
         let api = self.source.open().map_err(tool_err)?;
-        let (devices, _) = api.devices().await.map_err(tool_err)?;
+        let (devices, gaps) = api.devices().await.map_err(tool_err)?;
         let device = resolve::pick(&devices, &args.device).map_err(tool_err)?;
         if !device.dtype.has_emeter() {
             return Err(tool_err(CliError::Usage(format!(
@@ -682,18 +720,30 @@ impl<S: Source> TplinkTools<S> {
             ))));
         }
         let raw = api.energy(device, period).await.map_err(tool_err)?;
-        ToolOutput::new(&read_energy(device, period, &raw).map_err(tool_err)?)
+        let mut result = read_energy(device, period, &raw).map_err(tool_err)?;
+        result.note = gaps_note(&gaps);
+        ToolOutput::new(&result)
     }
 
     /// Resolve one device by its full name or id, check it may and can take the change, send
     /// it, and read the result back.
     async fn change(&self, query: &str, change: Change) -> Result<ToolOutput, ToolError> {
+        let started = Instant::now();
         let api = self.source.open().map_err(tool_err)?;
-        let (devices, _) = api.devices().await.map_err(tool_err)?;
+        let (devices, gaps) = api.devices().await.map_err(tool_err)?;
         let device = named_device(&devices, query).map_err(tool_err)?;
         check_may_change(device, change, &devices).map_err(tool_err)?;
+        // A name that is unique in part of the list may not be unique in all of it, and the
+        // prompt would look the same either way. An id is unique.
+        if !gaps.is_empty() && !is_its_id(device, query) {
+            return Err(tool_err(CliError::Upstream(format!(
+                "nothing was sent, because the list is incomplete and the name could mean another \
+                 device in what is missing: {} Pass its device_id, or try again.",
+                gaps.join(" ")
+            ))));
+        }
         let sent = api.control(device, change).await.map_err(tool_err)?;
-        ToolOutput::new(&self.read_back(&api, device, change, sent).await)
+        ToolOutput::new(&self.read_back(&api, device, change, sent, started).await)
     }
 
     /// The state after a command. The command has gone: a failure here says so and is not a
@@ -704,6 +754,7 @@ impl<S: Source> TplinkTools<S> {
         device: &Listed,
         change: Change,
         sent: Sent,
+        started: Instant,
     ) -> Controlled {
         let mut state = DeviceState {
             name: device.name().to_string(),
@@ -713,6 +764,12 @@ impl<S: Source> TplinkTools<S> {
         let mut failure = None;
         let mut confirmed = false;
         for wait in READ_BACK_WAITS {
+            if started.elapsed() >= self.source.read_back_deadline() {
+                failure.get_or_insert(CliError::Upstream(
+                    "there was no time left to read it".into(),
+                ));
+                break;
+            }
             self.source.pause(wait);
             match api
                 .sys_info(device)
@@ -755,6 +812,10 @@ fn unconfirmed_note(sent: &Sent, failure: Option<&CliError>) -> String {
     }
 }
 
+fn gaps_note(gaps: &[String]) -> Option<String> {
+    (!gaps.is_empty()).then(|| gaps.join(" "))
+}
+
 /// A filter as given, trimmed and lowered; blank is no filter.
 fn wanted_text(text: Option<&str>) -> Option<String> {
     text.map(|t| t.trim().to_lowercase())
@@ -766,15 +827,18 @@ fn wanted_text(text: Option<&str>) -> Option<String> {
 fn named_device<'a>(devices: &'a [Listed], query: &str) -> Result<&'a Listed, CliError> {
     let hit = resolve::pick(devices, query)?;
     let query = query.trim();
-    let folded = query.to_lowercase();
-    let is_its_id = hit.child_id.is_none() && hit.info.id().to_lowercase() == folded;
-    if hit.name().to_lowercase() == folded || is_its_id {
+    if hit.name().to_lowercase() == query.to_lowercase() || is_its_id(hit, query) {
         return Ok(hit);
     }
     Err(CliError::NotFound(format!(
         "`{query}` is only part of the name `{}`, and a change needs the full name",
         hit.name()
     )))
+}
+
+/// An outlet shares its strip's id, and answers to no id.
+fn is_its_id(device: &Listed, query: &str) -> bool {
+    device.child_id.is_none() && device.info.id().eq_ignore_ascii_case(query.trim())
 }
 
 /// What a device is, in the words a tool uses.

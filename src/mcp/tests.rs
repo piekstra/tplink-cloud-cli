@@ -116,6 +116,7 @@ struct Fake {
     energy_asked: RefCell<Vec<Period>>,
     sent: RefCell<Vec<(String, Change)>>,
     paused: Cell<usize>,
+    out_of_time: Cell<bool>,
 }
 
 type Tools = TplinkTools<Rc<Fake>>;
@@ -192,6 +193,14 @@ impl Source for Rc<Fake> {
 
     fn pause(&self, _how_long: Duration) {
         self.paused.set(self.paused.get() + 1);
+    }
+
+    fn read_back_deadline(&self) -> Duration {
+        if self.out_of_time.get() {
+            Duration::ZERO
+        } else {
+            READ_BACK_DEADLINE
+        }
     }
 }
 
@@ -908,6 +917,73 @@ fn a_lost_answer_reads_the_state_and_says_the_outcome_is_unknown() {
     assert!(got.get("note").is_none(), "{got}");
 }
 
+/// `--http` gives up on a call at 120 s, and a late answer says nothing.
+#[test]
+fn a_read_back_past_the_deadline_is_skipped_and_said() {
+    let (tools, fake) = home();
+    fake.out_of_time.set(true);
+    let got = ok(&tools, POWER_TOOL, json!({"device": PLUG, "power": "off"}));
+    assert_eq!(fake.state_reads.get(), 0);
+    assert_eq!(fake.sent().len(), 1);
+    assert_eq!(got["confirmed"], false);
+    let note = got["note"].as_str().unwrap();
+    assert!(note.contains("no time left"), "{note}");
+    assert!(note.contains("do not send it again"), "{note}");
+}
+
+const PATIENCE_LIMIT: u64 = 120;
+
+/// The sum the comment on `PATIENCE` makes, held to the limit it names.
+#[test]
+fn a_write_can_answer_inside_the_http_limit() {
+    let per_request = PATIENCE.request.as_secs();
+    let listing = PATIENCE.listing.unwrap().as_secs() + per_request * 2;
+    let command = per_request;
+    let last_read_back_starts = READ_BACK_DEADLINE.as_secs();
+    assert!(listing + command <= last_read_back_starts, "{listing}");
+    assert!(last_read_back_starts + per_request + 2 < PATIENCE_LIMIT);
+}
+
+// ---- a list with a part missing ---------------------------------------------------------
+
+/// A name that is unique in part of the list may not be unique in all of it.
+#[test]
+fn a_write_by_name_is_refused_while_part_of_the_list_is_missing() {
+    let (tools, fake) = home();
+    fake.gaps
+        .borrow_mut()
+        .push("Tapo's device list could not be read: down.".into());
+    let text = failed(&tools, POWER_TOOL, json!({"device": PLUG, "power": "off"}));
+    assert!(text.starts_with("upstream:"), "{text}");
+    assert!(text.contains("nothing was sent"), "{text}");
+    assert!(text.contains("Tapo's device list"), "{text}");
+    assert_eq!(fake.sent(), []);
+
+    fake.answer_states(vec![Ok(json!({"relay_state": 0}))]);
+    let got = ok(
+        &tools,
+        POWER_TOOL,
+        json!({"device": PLUG_ID, "power": "off"}),
+    );
+    assert_eq!(got["confirmed"], true, "an id is unique: {got}");
+    assert_eq!(fake.sent().len(), 1);
+}
+
+#[test]
+fn a_read_by_name_says_what_part_of_the_list_is_missing() {
+    let (tools, fake) = home();
+    fake.gaps
+        .borrow_mut()
+        .push("Tapo's device list could not be read: down.".into());
+    fake.answer_states(vec![Ok(json!({"relay_state": 0}))]);
+    let got = ok(&tools, STATE_TOOL, json!({"device": PLUG}));
+    assert!(got["note"].as_str().unwrap().contains("Tapo"), "{got}");
+
+    *fake.energy.borrow_mut() = json!({"power_mw": 1000, "total_wh": 1000});
+    let got = ok(&tools, ENERGY_TOOL, json!({"device": METER}));
+    assert!(got["note"].as_str().unwrap().contains("Tapo"), "{got}");
+}
+
 // ---- errors ----------------------------------------------------------------------------
 
 #[test]
@@ -972,16 +1048,43 @@ struct Seen {
     what: Value,
 }
 
+/// How the stub answers a relay command, which it applies first in every case.
+#[derive(Default, Clone, Copy, PartialEq)]
+enum Control {
+    #[default]
+    Answer,
+    /// A body that is not JSON.
+    Garble,
+    /// `responseData` that is not JSON.
+    GarbleInner,
+    /// A gateway's 502.
+    Gateway,
+    /// Hold the connection and answer nothing.
+    Hang,
+    /// The cloud says no, in its own words.
+    Refuse,
+}
+
 #[derive(Default)]
 struct StubState {
     seen: Vec<Seen>,
     relay: i64,
     /// The token a list is accepted with; any other is told it expired.
     valid_token: String,
-    garble_control: bool,
+    control: Control,
+    /// The refresh answer's new refresh token.
+    rotate_to: Option<String>,
 }
 
-/// The clouds on 127.0.0.1, answering from the fixtures, with one plug and one lock listed.
+/// One response, or nothing at all.
+enum Reply {
+    Json(String),
+    Status(u16, String),
+    Nothing,
+}
+
+/// The clouds on 127.0.0.1, answering from the fixtures, with one plug and one lock listed. A
+/// connection that goes wrong is that connection's, and the next one is served.
 fn stub_clouds() -> (String, Arc<Mutex<StubState>>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
@@ -992,49 +1095,73 @@ fn stub_clouds() -> (String, Arc<Mutex<StubState>>) {
     let state = shared.clone();
     let base = url.clone();
     std::thread::spawn(move || {
+        let mut held = Vec::new();
         for stream in listener.incoming() {
-            let mut stream = stream.unwrap();
-            let mut reader = BufReader::new(stream.try_clone().unwrap());
-            let mut line = String::new();
-            reader.read_line(&mut line).unwrap();
-            let path = line.split(' ').nth(1).unwrap_or("").to_string();
-            let mut length = 0usize;
-            loop {
-                let mut header = String::new();
-                reader.read_line(&mut header).unwrap();
-                if header.trim().is_empty() {
-                    break;
-                }
-                if let Some(n) = header.to_ascii_lowercase().strip_prefix("content-length:") {
-                    length = n.trim().parse().unwrap();
-                }
+            let Ok(stream) = stream else { continue };
+            if let Ok(Some(hang)) = serve(stream, &state, &base) {
+                held.push(hang);
             }
-            let mut body = vec![0; length];
-            reader.read_exact(&mut body).unwrap();
-            let body: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
-            let answer = stub_answer(&state, &base, &path, &body);
-            let _ = write!(
-                stream,
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
-                 Connection: close\r\n\r\n{answer}",
-                answer.len()
-            );
         }
     });
     (url, shared)
 }
 
-fn stub_answer(state: &Mutex<StubState>, base: &str, path: &str, body: &Value) -> String {
-    let mut state = state.lock().unwrap();
-    let passthrough = |inner: Value| {
-        json!({"error_code": 0, "result": {"responseData": inner.to_string()}}).to_string()
+fn serve(
+    mut stream: std::net::TcpStream,
+    state: &Mutex<StubState>,
+    base: &str,
+) -> std::io::Result<Option<std::net::TcpStream>> {
+    let mut reader = BufReader::new(stream.try_clone()?);
+    let mut line = String::new();
+    reader.read_line(&mut line)?;
+    let path = line.split(' ').nth(1).unwrap_or("").to_string();
+    let mut length = 0usize;
+    loop {
+        let mut header = String::new();
+        reader.read_line(&mut header)?;
+        if header.trim().is_empty() {
+            break;
+        }
+        if let Some(n) = header.to_ascii_lowercase().strip_prefix("content-length:") {
+            length = n.trim().parse().unwrap_or(0);
+        }
+    }
+    let mut body = vec![0; length];
+    reader.read_exact(&mut body)?;
+    let body: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+    let (status, answer) = match stub_answer(state, base, &path, &body) {
+        Reply::Json(answer) => (200, answer),
+        Reply::Status(status, answer) => (status, answer),
+        Reply::Nothing => return Ok(Some(stream)),
     };
+    write!(
+        stream,
+        "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
+         Connection: close\r\n\r\n{answer}",
+        answer.len()
+    )?;
+    Ok(None)
+}
+
+fn stub_answer(state: &Mutex<StubState>, base: &str, path: &str, body: &Value) -> Reply {
+    let mut state = state.lock().unwrap();
+    let wrap =
+        |inner: String| json!({"error_code": 0, "result": {"responseData": inner}}).to_string();
+    let passthrough = |inner: Value| wrap(inner.to_string());
     if path.starts_with("/api/v2/account/refreshToken") {
         state.seen.push(Seen {
             what: json!("refreshToken"),
         });
         state.valid_token = "kasa-token-renewed".into();
-        return json!({"error_code": 0, "result": {"token": "kasa-token-renewed"}}).to_string();
+        let mut result = json!({"token": "kasa-token-renewed"});
+        if let Some(rotated) = &state.rotate_to {
+            result["refreshToken"] = json!(rotated);
+        }
+        return Reply::Json(json!({"error_code": 0, "result": result}).to_string());
+    }
+    if path.contains("token=tapo-token-dummy") {
+        let failure = json!({"error_code": -1, "msg": "the dummy Tapo cloud is down"});
+        return Reply::Json(failure.to_string());
     }
     let token_ok = path.contains(&format!("token={}", state.valid_token));
     match body["method"].as_str() {
@@ -1043,42 +1170,57 @@ fn stub_answer(state: &Mutex<StubState>, base: &str, path: &str, body: &Value) -
                 what: json!("getDeviceList"),
             });
             if !token_ok {
-                return json!({"error_code": -20651, "msg": "Token expired"}).to_string();
+                let expired = json!({"error_code": -20651, "msg": "Token expired"});
+                return Reply::Json(expired.to_string());
             }
             let device = |id: &str, alias: &str, model: &str| {
                 json!({"deviceId": id, "alias": alias, "deviceModel": model, "status": 1,
                        "appServerUrl": base})
             };
-            json!({"error_code": 0, "result": {"deviceList": [
-                device(PLUG_ID, PLUG, "HS105(US)"),
-                device("0000000000000000000000000000000000000007", LOCK, "DL110(US)"),
-            ]}})
-            .to_string()
+            Reply::Json(
+                json!({"error_code": 0, "result": {"deviceList": [
+                    device(PLUG_ID, PLUG, "HS105(US)"),
+                    device("0000000000000000000000000000000000000007", LOCK, "DL110(US)"),
+                ]}})
+                .to_string(),
+            )
         }
         Some("passthrough") => {
-            let inner: Value =
-                serde_json::from_str(body["params"]["requestData"].as_str().unwrap()).unwrap();
+            let inner: Value = body["params"]["requestData"]
+                .as_str()
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or(Value::Null);
             state.seen.push(Seen {
                 what: inner.clone(),
             });
             if let Some(set) = inner["system"].get("set_relay_state") {
-                state.relay = set["state"].as_i64().unwrap();
-                if state.garble_control {
-                    return "<html>bad gateway</html>".to_string();
-                }
-                return passthrough(json!({"system": {"set_relay_state": {"err_code": 0}}}));
+                state.relay = set["state"].as_i64().unwrap_or(0);
+                return match state.control {
+                    Control::Answer => Reply::Json(passthrough(
+                        json!({"system": {"set_relay_state": {"err_code": 0}}}),
+                    )),
+                    Control::Garble => Reply::Json("<html>bad gateway</html>".to_string()),
+                    Control::GarbleInner => Reply::Json(wrap("<not json>".to_string())),
+                    Control::Gateway => Reply::Status(502, "<html>bad gateway</html>".to_string()),
+                    Control::Hang => Reply::Nothing,
+                    Control::Refuse => Reply::Json(
+                        json!({"error_code": -20571, "msg": "Device is offline"}).to_string(),
+                    ),
+                };
             }
             let mut info = sys_info_of("hs103_get_sys_info_response.json");
             info["relay_state"] = json!(state.relay);
-            passthrough(json!({"system": {"get_sysinfo": info}}))
+            Reply::Json(passthrough(json!({"system": {"get_sysinfo": info}})))
         }
-        _ => json!({"error_code": -1, "msg": "no such route in the stub"}).to_string(),
+        _ => {
+            let unknown = json!({"error_code": -1, "msg": "no such route in the stub"});
+            Reply::Json(unknown.to_string())
+        }
     }
 }
 
-fn live(url: &str, token: &str) -> (TplinkTools<LiveSource<SharedKeychain>>, SharedKeychain) {
-    let keychain = SharedKeychain::default();
-    let session = TokenSet {
+fn dummy_session(url: &str, token: &str) -> TokenSet {
+    TokenSet {
         token: token.into(),
         refresh_token: Some("kasa-refresh-dummy".into()),
         username: "user@example.com".into(),
@@ -1089,16 +1231,20 @@ fn live(url: &str, token: &str) -> (TplinkTools<LiveSource<SharedKeychain>>, Sha
         tapo_regional_url: None,
         tapo_app_server_url: None,
         tapo_app_server_expires_at: None,
-    };
-    keychain.set_json("session", &session).unwrap();
-    let lock = std::env::temp_dir().join(format!(
-        "tplc-mcp-test-{}-{}.lock",
-        std::process::id(),
-        uuid::Uuid::new_v4()
-    ));
+    }
+}
+
+fn live(url: &str, token: &str) -> (TplinkTools<LiveSource<SharedKeychain>>, SharedKeychain) {
+    let keychain = SharedKeychain::default();
+    keychain
+        .set_json("session", &dummy_session(url, token))
+        .unwrap();
     let store = keychain.clone();
+    // The closure owns the directory, so the lock goes with the tools.
+    let dir = tempfile::tempdir().unwrap();
     let source = LiveSource::over(move || {
-        Sessions::with_stores(store.clone(), SharedKeychain::default()).with_lock_at(&lock)
+        Sessions::with_stores(store.clone(), SharedKeychain::default())
+            .with_lock_at(dir.path().join("token-refresh.lock"))
     });
     (TplinkTools::new(source), keychain)
 }
@@ -1183,8 +1329,9 @@ fn an_expired_token_is_renewed_and_stored_once() {
 fn a_session_another_process_renewed_is_used_as_it_is() {
     let (url, stub) = stub_clouds();
     let (_, keychain) = live(&url, "kasa-token-dummy");
+    let dir = tempfile::tempdir().unwrap();
     let sessions = Sessions::with_stores(keychain.clone(), SharedKeychain::default())
-        .with_lock_at(std::env::temp_dir().join(format!("tplc-mcp-test-{}", uuid::Uuid::new_v4())));
+        .with_lock_at(dir.path().join("token-refresh.lock"));
     let mut stale: TokenSet = keychain.get_json("session").unwrap().unwrap();
     stale.token = "kasa-token-refused".into();
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -1207,9 +1354,10 @@ fn a_session_another_process_renewed_is_used_as_it_is() {
 fn a_tool_never_moves_or_creates_a_session() {
     let keychain = SharedKeychain::default();
     let store = keychain.clone();
+    let dir = tempfile::tempdir().unwrap();
     let source = LiveSource::over(move || {
         Sessions::with_stores(store.clone(), SharedKeychain::default())
-            .with_lock_at(std::env::temp_dir().join(format!("tplc-{}", uuid::Uuid::new_v4())))
+            .with_lock_at(dir.path().join("token-refresh.lock"))
     });
     let tools = TplinkTools::new(source);
     let got = call(&tools, DEVICES_TOOL, json!({}));
@@ -1217,17 +1365,105 @@ fn a_tool_never_moves_or_creates_a_session() {
     assert!(keychain.items.lock().unwrap().is_empty());
 }
 
-/// The command took effect and the answer was lost: a real client's decode error, through to a
-/// result that reports the state.
+/// A refresh answer can retire the refresh token, and then only the new one works.
 #[test]
-fn a_garbled_answer_to_a_command_is_settled_by_the_state() {
+fn a_rotated_refresh_token_is_stored() {
     let (url, stub) = stub_clouds();
-    stub.lock().unwrap().garble_control = true;
-    let (tools, _) = live(&url, "kasa-token-dummy");
+    stub.lock().unwrap().rotate_to = Some("kasa-refresh-rotated".into());
+    let (tools, keychain) = live(&url, "kasa-token-old");
+    assert!(!call(&tools, DEVICES_TOOL, json!({})).is_error());
+    let stored: TokenSet = keychain.get_json("session").unwrap().unwrap();
+    assert_eq!(
+        stored.refresh_token.as_deref(),
+        Some("kasa-refresh-rotated")
+    );
+}
+
+/// The command took effect and its answer was lost, through a real client's error, to a result
+/// that reports the state and does not ask for the command again.
+#[test]
+fn a_lost_answer_to_a_command_is_settled_by_the_state() {
+    for control in [Control::Garble, Control::GarbleInner, Control::Gateway] {
+        let (url, stub) = stub_clouds();
+        stub.lock().unwrap().control = control;
+        let (tools, _) = live(&url, "kasa-token-dummy");
+        let got = call(&tools, POWER_TOOL, json!({"device": PLUG, "power": "on"}));
+        let got = assert_fits(&tools, POWER_TOOL, &got);
+        assert_eq!(got["confirmed"], true, "{got}");
+        assert_eq!(got["device"]["power"], "on");
+    }
+}
+
+/// A request that never answers stops at this client, and the read-back still runs.
+#[test]
+fn a_command_that_never_answers_is_settled_by_the_state() {
+    let (url, stub) = stub_clouds();
+    stub.lock().unwrap().control = Control::Hang;
+    let keychain = SharedKeychain::default();
+    let session = dummy_session(&url, "kasa-token-dummy");
+    keychain.set_json("session", &session).unwrap();
+    let store = keychain.clone();
+    let dir = tempfile::tempdir().unwrap();
+    let source = LiveSource::over(move || {
+        Sessions::with_stores(store.clone(), SharedKeychain::default())
+            .with_lock_at(dir.path().join("token-refresh.lock"))
+    })
+    .waiting(Duration::from_secs(1));
+    let tools = TplinkTools::new(source);
     let got = call(&tools, POWER_TOOL, json!({"device": PLUG, "power": "on"}));
     let got = assert_fits(&tools, POWER_TOOL, &got);
     assert_eq!(got["confirmed"], true, "{got}");
     assert_eq!(got["device"]["power"], "on");
+}
+
+/// The cloud saying no is an answer, and it is not a lost one.
+#[test]
+fn a_cloud_that_refuses_a_command_is_an_error_with_no_read_back() {
+    let (url, stub) = stub_clouds();
+    stub.lock().unwrap().control = Control::Refuse;
+    let (tools, _) = live(&url, "kasa-token-dummy");
+    let got = call(&tools, POWER_TOOL, json!({"device": PLUG, "power": "on"}));
+    assert!(got.is_error(), "{}", got.text());
+    assert!(got.text().starts_with("upstream:"), "{}", got.text());
+    let seen = stub.lock().unwrap().seen.clone();
+    assert!(
+        !seen
+            .iter()
+            .any(|r| r.what["system"].get("get_sysinfo").is_some()),
+        "{seen:?}"
+    );
+}
+
+/// The list came back short because Tapo failed: real clients, and no relay command.
+#[test]
+fn the_live_path_sends_nothing_by_name_while_tapo_cannot_be_read() {
+    let (url, stub) = stub_clouds();
+    let keychain = SharedKeychain::default();
+    let mut session = dummy_session(&url, "kasa-token-dummy");
+    session.tapo_token = Some("tapo-token-dummy".into());
+    session.tapo_refresh_token = Some("tapo-refresh-dummy".into());
+    session.tapo_regional_url = Some(url.clone());
+    keychain.set_json("session", &session).unwrap();
+    let store = keychain.clone();
+    let dir = tempfile::tempdir().unwrap();
+    let source = LiveSource::over(move || {
+        Sessions::with_stores(store.clone(), SharedKeychain::default())
+            .with_lock_at(dir.path().join("token-refresh.lock"))
+    });
+    let tools = TplinkTools::new(source);
+
+    let got = call(&tools, POWER_TOOL, json!({"device": PLUG, "power": "on"}));
+    assert!(got.is_error(), "{}", got.text());
+    assert!(got.text().contains("nothing was sent"), "{}", got.text());
+    assert_eq!(stub.lock().unwrap().relay, 0);
+
+    let got = call(
+        &tools,
+        POWER_TOOL,
+        json!({"device": PLUG_ID, "power": "on"}),
+    );
+    assert!(!got.is_error(), "{}", got.text());
+    assert_eq!(stub.lock().unwrap().relay, 1);
 }
 
 #[test]
@@ -1248,11 +1484,14 @@ fn nothing_listening_names_no_url_and_no_token() {
 /// device's refusal inside a successful reply is one too.
 #[test]
 fn what_became_of_a_command() {
+    let closed = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/", closed.local_addr().unwrap());
+    drop(closed);
     let refused = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap()
-        .block_on(reqwest::Client::new().post("http://127.0.0.1:9/").send())
+        .block_on(reqwest::Client::new().post(url).send())
         .unwrap_err();
     let got = what_became_of(Err(refused.into()));
     assert!(matches!(got, Err(CliError::Upstream(_))), "{got:?}");

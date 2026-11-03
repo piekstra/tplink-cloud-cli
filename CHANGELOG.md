@@ -20,8 +20,12 @@
   `tplc-<version>.mcpb`, a Claude Desktop extension, and a release is published only once every asset
   is there.
 - `self-update` says to restart a running `tplc mcp --http` and to install the new `.mcpb`.
-- `auth logout --forget` also removes the connector token, even if that fails it clears the config, and
-  plain `auth logout` says it keeps the token. A login waits for a renewal in flight.
+- `auth logout --forget` also removes the connector token. If that fails it still clears the config,
+  exits nonzero, and with `--json` reports `connector_token_removed: false` on its `auth-logout/v1`
+  document. Plain `auth logout` says it keeps the token. A login waits for a renewal in flight.
+- `tplc rooms` caches the Tapo app-server URL under the same lock, over the session as it is then. It
+  used to store the copy it had read, which could restore a retired refresh token or a logged-out
+  session.
 - cli-common v0.22.0, up from v0.15.1. The minimum Rust version is 1.89.
 
 ## 0.2.3 — 2026-11-03

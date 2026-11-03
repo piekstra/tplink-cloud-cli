@@ -2,13 +2,14 @@
 //! every device command starts from.
 
 use std::collections::HashSet;
+use std::time::{Duration, Instant};
 
 use pk_cli_core::CliError;
 use serde_json::{json, Value};
 
 use crate::api::client::TPLinkApi;
 use crate::api::cloud_type::CloudType;
-use crate::api::device_client::DeviceClient;
+use crate::api::device_client::{DeviceClient, PASSTHROUGH_TIMEOUT};
 use crate::cli::emit::Ctx;
 use crate::models::device::Device;
 use crate::models::device_info::DeviceInfo;
@@ -71,13 +72,38 @@ pub async fn fetch_all_devices_with(
     expand_children: bool,
 ) -> Result<(Vec<Listed>, TokenSet), CliError> {
     let mut tokens = ctx.session()?;
-    let fetched = fetch_devices(ctx.sessions, &mut tokens, expand_children, ctx.verbose).await?;
+    let fetched = fetch_devices(
+        ctx.sessions,
+        &mut tokens,
+        expand_children,
+        ctx.verbose,
+        Patience::CLI,
+    )
+    .await?;
     if ctx.verbose {
         for gap in &fetched.gaps {
             eprintln!("{gap} (non-fatal)");
         }
     }
     Ok((fetched.devices, tokens))
+}
+
+/// How long discovery waits. A person at a terminal can wait out a device the cloud is trying to
+/// wake. A tool has to answer inside its call's limit, while the answer can still say what
+/// became of a command.
+#[derive(Debug, Clone, Copy)]
+pub struct Patience {
+    /// Each request to a device.
+    pub request: Duration,
+    /// Once this has passed, no further strip's outlets are asked for.
+    pub listing: Option<Duration>,
+}
+
+impl Patience {
+    pub const CLI: Patience = Patience {
+        request: PASSTHROUGH_TIMEOUT,
+        listing: None,
+    };
 }
 
 /// The devices both clouds list, and what could not be read of them.
@@ -95,11 +121,17 @@ pub async fn fetch_devices<S: SecretItems>(
     tokens: &mut TokenSet,
     expand_children: bool,
     verbose: bool,
+    patience: Patience,
 ) -> Result<Fetched, CliError> {
-    let mut fetched =
-        fetch_cloud(sessions, tokens, CloudType::Kasa, expand_children, verbose).await?;
+    let wait = Listing {
+        expand_children,
+        verbose,
+        patience,
+        started: Instant::now(),
+    };
+    let mut fetched = fetch_cloud(sessions, tokens, CloudType::Kasa, wait).await?;
     if tokens.has_tapo() {
-        match fetch_cloud(sessions, tokens, CloudType::Tapo, expand_children, verbose).await {
+        match fetch_cloud(sessions, tokens, CloudType::Tapo, wait).await {
             Ok(tapo) => {
                 let seen: HashSet<String> = fetched
                     .devices
@@ -121,14 +153,36 @@ pub async fn fetch_devices<S: SecretItems>(
     Ok(fetched)
 }
 
+/// One discovery's settings, and when it began.
+#[derive(Clone, Copy)]
+struct Listing {
+    expand_children: bool,
+    verbose: bool,
+    patience: Patience,
+    started: Instant,
+}
+
+impl Listing {
+    fn out_of_time(&self) -> bool {
+        self.patience
+            .listing
+            .is_some_and(|limit| self.started.elapsed() >= limit)
+    }
+}
+
 /// One cloud's device list, refreshing that cloud's token once if expired.
 async fn fetch_cloud<S: SecretItems>(
     sessions: &Sessions<S>,
     tokens: &mut TokenSet,
     cloud: CloudType,
-    expand_children: bool,
-    verbose: bool,
+    wait: Listing,
 ) -> Result<Fetched, CliError> {
+    let Listing {
+        expand_children,
+        verbose,
+        patience,
+        ..
+    } = wait;
     let device_list = session::with_refresh(sessions, tokens, cloud, verbose, |t| {
         let access = t.cloud_access(cloud);
         let term_id = t.term_id.clone();
@@ -155,12 +209,20 @@ async fn fetch_cloud<S: SecretItems>(
             child_alias: None,
         });
         if expand_children && dtype.has_children() {
-            let client = DeviceClient::new(
+            if wait.out_of_time() {
+                gaps.push(format!(
+                    "The outlets of `{}` were not read, for lack of time.",
+                    info.alias_or_name()
+                ));
+                continue;
+            }
+            let client = DeviceClient::with_timeout(
                 info.app_server_url.as_deref().unwrap_or(&regional_url),
                 &token,
                 &tokens.term_id,
                 verbose,
                 cloud,
+                patience.request,
             )?;
             let parent = Device::new(client, info.id().to_string(), info.clone(), dtype, None);
             // A strip whose outlets can't be read still lists as itself.
@@ -220,9 +282,19 @@ pub(crate) fn build_device(
     tokens: &TokenSet,
     verbose: bool,
 ) -> Result<Device, CliError> {
+    build_device_waiting(listed, tokens, verbose, PASSTHROUGH_TIMEOUT)
+}
+
+/// As [`build_device`], waiting no longer than `timeout` for each request.
+pub(crate) fn build_device_waiting(
+    listed: &Listed,
+    tokens: &TokenSet,
+    verbose: bool,
+    timeout: Duration,
+) -> Result<Device, CliError> {
     let cloud = listed.cloud();
     let (token, regional_url) = tokens.cloud_access(cloud)?;
-    let client = DeviceClient::new(
+    let client = DeviceClient::with_timeout(
         listed
             .info
             .app_server_url
@@ -232,6 +304,7 @@ pub(crate) fn build_device(
         &tokens.term_id,
         verbose,
         cloud,
+        timeout,
     )?;
     Ok(Device::new(
         client,
