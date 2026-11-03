@@ -338,6 +338,16 @@ mod tests {
     }
 
     #[test]
+    fn the_token_does_not_follow_a_redirect_to_another_host() {
+        use crate::api::client::tests::{redirect_to_another_host, runtime};
+        let (first, arrived) = redirect_to_another_host();
+        let nbu = NbuClient::new(&first, "dummy", "term", false).unwrap();
+        let sent = runtime().block_on(async { nbu.client.post(&first).send().await });
+        assert!(sent.is_err());
+        assert!(arrived.lock().unwrap().is_empty());
+    }
+
+    #[test]
     fn room_ids_are_eight_alphanumerics() {
         let id = new_room_id();
         assert_eq!(id.len(), 8);

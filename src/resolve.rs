@@ -254,16 +254,25 @@ async fn fetch_cloud<S: SecretItems>(
                 ));
                 continue;
             }
-            let client = DeviceClient::with_timeout(
-                info.app_server_url.as_deref().unwrap_or(&regional_url),
+            // A strip whose outlets can't be read still lists as itself.
+            let client = match DeviceClient::with_timeout(
+                host_of(&info, &regional_url),
                 &token,
                 &tokens.term_id,
                 verbose,
                 cloud,
                 patience.request,
-            )?;
+            ) {
+                Ok(client) => client,
+                Err(e) => {
+                    gaps.push(format!(
+                        "The outlets of `{}` could not be read: {e}",
+                        info.alias_or_name()
+                    ));
+                    continue;
+                }
+            };
             let parent = Device::new(client, info.id().to_string(), info.clone(), dtype, None);
-            // A strip whose outlets can't be read still lists as itself.
             match parent.get_children().await {
                 Ok(children) => {
                     for child in children {
@@ -287,6 +296,14 @@ async fn fetch_cloud<S: SecretItems>(
         gaps,
         unseen,
     })
+}
+
+/// A device's own app server, or the account's when its answer names none.
+fn host_of<'a>(info: &'a DeviceInfo, regional_url: &'a str) -> &'a str {
+    info.app_server_url
+        .as_deref()
+        .filter(|url| !url.is_empty())
+        .unwrap_or(regional_url)
 }
 
 /// Resolve a device by name or id across both clouds. Ladder:
@@ -337,11 +354,7 @@ pub(crate) fn build_device_waiting(
     let cloud = listed.cloud();
     let (token, regional_url) = tokens.cloud_access(cloud)?;
     let client = DeviceClient::with_timeout(
-        listed
-            .info
-            .app_server_url
-            .as_deref()
-            .unwrap_or(&regional_url),
+        host_of(&listed.info, &regional_url),
         &token,
         &tokens.term_id,
         verbose,

@@ -75,13 +75,17 @@ const PROVIDER_DOMAINS: [&str; 3] = ["tplinkcloud.com", "tplinknbu.com", "tplink
 
 /// Refuse a URL a credential is about to follow, unless it is `https` on one of TP-Link's domains.
 /// Such a URL came from TP-Link's answer or from a session made of those answers, so a refusal is
-/// an upstream failure, and its text does not repeat what the answer said, since that can reach a
-/// model. A debug build, which is what the tests run, also takes this machine, for their stubs.
+/// an upstream failure, and its text does not repeat the address, since that can reach a model. A
+/// debug build, which is what the tests run, also takes this machine, for their stubs.
 pub(crate) fn ensure_provider_url(url: &str) -> Result<(), AppError> {
-    let host = require_secure_url(url)
+    let parsed = require_secure_url(url)
         .ok()
         .and_then(|()| reqwest::Url::parse(url).ok())
-        .and_then(|url| url.host_str().map(str::to_ascii_lowercase));
+        .filter(|url| url.username().is_empty() && url.password().is_none());
+    let host = parsed
+        .as_ref()
+        .and_then(|url| url.host_str())
+        .map(str::to_ascii_lowercase);
     let allowed = host.is_some_and(|host| {
         PROVIDER_DOMAINS
             .iter()
@@ -92,8 +96,9 @@ pub(crate) fn ensure_provider_url(url: &str) -> Result<(), AppError> {
         return Ok(());
     }
     Err(AppError::Api {
-        message: "TP-Link named an address that is not on a TP-Link domain, so no credential \
-                  was sent to it"
+        message: "the address saved or answered for this request is not on a TP-Link domain, so \
+                  no credential was sent to it. Run `tplc auth login`. If that is refused too, \
+                  TP-Link serves this region from a domain `tplc` does not know yet, so report it"
             .into(),
         error_code: None,
     })
@@ -578,12 +583,12 @@ impl TPLinkApi {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use pk_cli_core::CliError;
 
     /// A server on 127.0.0.1 answering each request with `answer`, and what arrived there.
-    fn stub(answer: String) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+    pub(crate) fn stub(answer: String) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
         use std::io::{Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
@@ -610,6 +615,24 @@ mod tests {
         )
     }
 
+    /// The first stub redirects with a 307, which re-sends a POST's body, to a second on another
+    /// port. The second is where a credential must not arrive.
+    pub(crate) fn redirect_to_another_host(
+    ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        let (elsewhere, arrived) = stub(json_answer("{}"));
+        let (first, _) = stub(format!(
+            "HTTP/1.1 307 Temporary Redirect\r\nLocation: {elsewhere}/x\r\nContent-Length: 0\r\n\r\n"
+        ));
+        (first, arrived)
+    }
+
+    pub(crate) fn runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    }
+
     #[test]
     fn a_credential_goes_only_to_https_on_a_tplink_domain() {
         for good in [
@@ -618,6 +641,7 @@ mod tests {
             "https://use1-app-server.iot.i.tplinknbu.com",
             "https://api.tplinkra.com",
             "HTTPS://N-WAP.TPLINKCLOUD.COM",
+            "https://n-wap.tplinkcloud.com:8443",
         ] {
             assert!(ensure_provider_url(good).is_ok(), "{good}");
         }
@@ -627,12 +651,16 @@ mod tests {
             "https://n-wap.tplinkcloud.com.elsewhere.example",
             "https://elsewheretplinkcloud.com",
             "https://n-wap.tplinkcloud.com@elsewhere.example",
+            "https://someone:dummy@n-wap.tplinkcloud.com",
+            "https://n-wap.tplinkcloud.com.",
+            "https://203.0.113.7",
             "n-wap.tplinkcloud.com",
             "",
         ] {
             let err = ensure_provider_url(bad).unwrap_err();
             let text = CliError::from(err).to_string();
             assert!(text.contains("no credential"), "{bad}: {text}");
+            assert!(text.contains("`tplc auth login`"), "{bad}: {text}");
             assert!(!text.contains("elsewhere"), "{bad}: {text}");
         }
     }
@@ -644,17 +672,26 @@ mod tests {
             r#"{"error_code":0,"result":{"appServerUrl":"https://elsewhere.example"}}"#,
         ));
         let mut api = TPLinkApi::new(Some(cloud), false, None, CloudType::Kasa).unwrap();
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let Err(err) = runtime.block_on(api.login("someone@example.com", "dummy-password")) else {
+        let password = format!("dummy-{}", std::process::id());
+        let Err(err) = runtime().block_on(api.login("someone@example.com", &password)) else {
             panic!("the login went ahead");
         };
         assert!(CliError::from(err).to_string().contains("no credential"));
         let seen = seen.lock().unwrap();
         assert_eq!(seen.len(), 1);
-        assert!(!seen[0].contains("dummy-password"));
+        assert!(!seen[0].contains(&password));
+    }
+
+    /// `NbuClient` takes what this returns, with the token in its header.
+    #[test]
+    fn a_service_url_on_another_host_is_not_handed_on() {
+        let (cloud, _) = stub(json_answer(
+            r#"{"error_code":0,"result":{"serviceUrls":{"nbu.iot-app-server.app":"https://elsewhere.example"}}}"#,
+        ));
+        let api = TPLinkApi::new(Some(cloud), false, None, CloudType::Tapo).unwrap();
+        let asked = api.get_app_service_url("dummy", "nbu.iot-app-server.app");
+        let err = runtime().block_on(asked).unwrap_err();
+        assert!(CliError::from(err).to_string().contains("no credential"));
     }
 
     #[test]
@@ -666,19 +703,12 @@ mod tests {
     /// A 307 re-sends the body, which holds the password or the refresh token.
     #[test]
     fn a_body_does_not_follow_a_redirect_to_another_host() {
-        let (elsewhere, arrived) = stub(json_answer("{}"));
-        let (first, _) = stub(format!(
-            "HTTP/1.1 307 Temporary Redirect\r\nLocation: {elsewhere}/x\r\nContent-Length: 0\r\n\r\n"
-        ));
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let sent = runtime.block_on(async {
+        let (first, arrived) = redirect_to_another_host();
+        let sent = runtime().block_on(async {
             build_http_client()
                 .unwrap()
                 .post(&first)
-                .json(&json!({"cloudPassword": "dummy-password"}))
+                .json(&json!({"cloudPassword": "dummy"}))
                 .send()
                 .await
         });

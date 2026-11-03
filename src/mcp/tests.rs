@@ -1127,6 +1127,8 @@ struct StubState {
     control: Control,
     /// List one strip, with this `status`.
     strip_status: Option<i64>,
+    /// The listed strip's own `appServerUrl`, in place of this stub's.
+    strip_host: Option<String>,
     /// Answer every passthrough with a gateway's page that repeats the token.
     gateway_pages: bool,
     /// Answer the device list with one.
@@ -1251,6 +1253,9 @@ fn stub_answer(state: &Mutex<StubState>, base: &str, path: &str, body: &Value) -
             if let Some(status) = state.strip_status {
                 let mut strip = device(OFFLINE_STRIP_ID, OFFLINE_STRIP, "HS300(US)");
                 strip["status"] = json!(status);
+                if let Some(host) = &state.strip_host {
+                    strip["appServerUrl"] = json!(host);
+                }
                 list.push(strip);
             }
             Reply::Json(json!({"error_code": 0, "result": {"deviceList": list}}).to_string())
@@ -1529,6 +1534,58 @@ fn a_cloud_that_forbids_a_command_is_an_error_with_no_read_back() {
             .any(|r| r.what["system"].get("get_sysinfo").is_some()),
         "{seen:?}"
     );
+}
+
+/// One strip's address costs that strip its outlets, not the list, and it gets no token. Writes
+/// by name then stop on the gap, as for any other.
+#[test]
+fn a_strip_on_another_host_is_a_gap_and_the_rest_still_lists() {
+    let (url, stub) = stub_clouds();
+    {
+        let mut stub = stub.lock().unwrap();
+        stub.strip_status = Some(1);
+        stub.strip_host = Some("https://elsewhere.example".into());
+    }
+    let (tools, _) = live(&url, "kasa-token-dummy");
+
+    let got = call(&tools, DEVICES_TOOL, json!({}));
+    let got = assert_fits(&tools, DEVICES_TOOL, &got);
+    let names: Vec<&str> = got["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["name"].as_str().unwrap())
+        .collect();
+    assert!(
+        names.contains(&PLUG) && names.contains(&OFFLINE_STRIP),
+        "{got}"
+    );
+    let note = got["note"].as_str().unwrap();
+    assert!(
+        note.contains(OFFLINE_STRIP) && note.contains("no credential"),
+        "{got}"
+    );
+    assert!(!note.contains("elsewhere"), "{got}");
+
+    let got = call(&tools, POWER_TOOL, json!({"device": PLUG, "power": "on"}));
+    assert!(got.is_error());
+    assert_eq!(stub.lock().unwrap().relay, 0);
+}
+
+/// An empty address is none, so the account's serves, and no gap comes of it.
+#[test]
+fn a_strip_with_an_empty_address_uses_the_accounts() {
+    let (url, stub) = stub_clouds();
+    {
+        let mut stub = stub.lock().unwrap();
+        stub.strip_status = Some(1);
+        stub.strip_host = Some(String::new());
+    }
+    let (tools, _) = live(&url, "kasa-token-dummy");
+    let got = call(&tools, DEVICES_TOOL, json!({}));
+    let got = assert_fits(&tools, DEVICES_TOOL, &got);
+    let note = got["note"].as_str().unwrap_or_default();
+    assert!(!note.contains("no credential"), "{got}");
 }
 
 /// One strip left unplugged for weeks must not stop every write by name: it is not asked for its

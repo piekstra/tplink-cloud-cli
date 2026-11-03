@@ -179,3 +179,27 @@ impl DeviceClient {
         Ok(None)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::client::tests::{redirect_to_another_host, runtime};
+
+    fn client_at(host: &str) -> Result<DeviceClient, AppError> {
+        DeviceClient::new(host, "dummy", "term", false, CloudType::Kasa)
+    }
+
+    #[test]
+    fn a_device_url_on_another_host_gets_no_token() {
+        assert!(client_at("https://elsewhere.example").is_err());
+    }
+
+    #[test]
+    fn the_token_does_not_follow_a_redirect_to_another_host() {
+        let (first, arrived) = redirect_to_another_host();
+        let device = client_at(&first).unwrap();
+        let sent = runtime().block_on(async { device.client.post(&first).send().await });
+        assert!(sent.is_err());
+        assert!(arrived.lock().unwrap().is_empty());
+    }
+}
