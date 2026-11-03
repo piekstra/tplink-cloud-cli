@@ -45,6 +45,7 @@ jobs:
           ./target/release/tplc --version
           ./target/release/tplc --help > /dev/null
           ./target/release/tplc info > /dev/null
+          ./target/release/tplc mcp --list-tools > /dev/null
 
   # The only platform-specific sliver is the apple-native keyring backend, so
   # macOS gets a targeted compile + smoke, not a second copy of the whole
@@ -59,6 +60,7 @@ jobs:
           cargo build --release --locked
           ./target/release/tplc --version
           ./target/release/tplc info > /dev/null
+          ./target/release/tplc mcp --list-tools > /dev/null
 
   security:
     runs-on: ubuntu-latest

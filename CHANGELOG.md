@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.3.0 — 2026-11-03
+
+- `tplc mcp`: tools for Claude. `tplink_devices`, `tplink_device_state` and `tplink_energy` read;
+  `tplink_power` and `tplink_light` change one light, plug, wall switch or outlet, named in full, and
+  a client that honors their annotations asks you before each call. Each returns the state read back
+  and says whether it shows the change. They run over stdio for Claude Code and Claude Desktop, and
+  with `--http` on 127.0.0.1 behind a bearer token for Claude on the web and mobile through your own
+  Cloudflare Worker and tunnel, reads only unless `--allow-writes`. No tool can change a whole strip or
+  a model this CLI does not know, edit a schedule, a room or a group, change an account or firmware, or
+  reach `tplc api`.
+- **Security fix:** a failed request's error no longer carries its URL. The device passthrough and the
+  Kasa groups call put the session token in the query string, so a connection error printed the token,
+  and `--json` carried it.
+- A refresh with no token in the answer is an error, not an empty session.
+- Token renewal runs under a lock every `tplc` process shares, reads the session again there, and writes
+  it once before the request, so a server and a terminal cannot spend one refresh token twice.
+- Releases are cut by pushing a tag, no longer by merging a version bump. They attach
+  `tplc-<version>.mcpb`, a Claude Desktop extension, and a release is published only once every asset
+  is there.
+- `self-update` says to restart a running `tplc mcp --http` and to install the new `.mcpb`.
+- `auth logout --forget` also removes the connector token, even if that fails it clears the config, and
+  plain `auth logout` says it keeps the token. A login waits for a renewal in flight.
+- cli-common v0.22.0, up from v0.15.1. The minimum Rust version is 1.89.
+
 ## 0.2.3 — 2026-11-03
 
 - `NO_COLOR=1` no longer fails every command with a usage error (exit 2):

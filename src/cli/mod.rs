@@ -103,6 +103,13 @@ pub enum Command {
     /// Not the family's HTTP `api <VERB> <PATH>` form: the TP-Link cloud has
     /// method names, not paths.
     Api(api::ApiArgs),
+    /// Serve TP-Link tools to Claude over MCP: three reads, and two that change one light or
+    /// plug, which the client asks you about first (stdio, or --http).
+    ///
+    /// For Claude Code (`claude mcp add tplink -- tplc mcp`), Claude Desktop and any MCP
+    /// client. With --http, on 127.0.0.1 behind a bearer token, for your own Cloudflare
+    /// Worker (see README), and read-only unless --allow-writes.
+    Mcp(pk_cli_mcp::McpArgs),
     /// Update to the latest release from GitHub.
     SelfUpdate(SelfUpdateArgs),
     /// Print a shell completion script.
@@ -115,7 +122,8 @@ pub enum AuthCmd {
     Login(auth::LoginOpts),
     /// Report session state (auth-status/v1). Works logged out.
     Status,
-    /// Clear the stored session; --forget also clears the saved identity/config.
+    /// Clear the stored session; --forget also removes the connector token and the saved
+    /// identity/config.
     Logout(LogoutArgs),
     /// Not supported: the session comes from `auth login` (always a usage error).
     SetCredential(SetCredentialArgs),

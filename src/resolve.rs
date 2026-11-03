@@ -13,7 +13,7 @@ use crate::cli::emit::Ctx;
 use crate::models::device::Device;
 use crate::models::device_info::DeviceInfo;
 use crate::models::device_type::DeviceType;
-use crate::session::{self, TokenSet};
+use crate::session::{self, SecretItems, Sessions, TokenSet};
 
 /// One addressable device: a cloud-listed device, or one outlet of a
 /// multi-outlet strip (then `child_id`/`child_alias` are set and `info` is
@@ -71,33 +71,65 @@ pub async fn fetch_all_devices_with(
     expand_children: bool,
 ) -> Result<(Vec<Listed>, TokenSet), CliError> {
     let mut tokens = ctx.session()?;
-    let mut devices = fetch_cloud(ctx, &mut tokens, CloudType::Kasa, expand_children).await?;
-    if tokens.has_tapo() {
-        match fetch_cloud(ctx, &mut tokens, CloudType::Tapo, expand_children).await {
-            Ok(tapo) => {
-                let seen: HashSet<String> =
-                    devices.iter().map(|d| d.info.id().to_string()).collect();
-                devices.extend(tapo.into_iter().filter(|d| !seen.contains(d.info.id())));
-            }
-            Err(e) => {
-                if ctx.verbose {
-                    eprintln!("Tapo device fetch failed (non-fatal): {e}");
-                }
-            }
+    let fetched = fetch_devices(ctx.sessions, &mut tokens, expand_children, ctx.verbose).await?;
+    if ctx.verbose {
+        for gap in &fetched.gaps {
+            eprintln!("{gap} (non-fatal)");
         }
     }
-    Ok((devices, tokens))
+    Ok((fetched.devices, tokens))
+}
+
+/// The devices both clouds list, and what could not be read of them.
+pub struct Fetched {
+    pub devices: Vec<Listed>,
+    /// A cloud or a strip's outlets that are missing, in a sentence. A reader told "these are
+    /// your devices" can be told this too.
+    pub gaps: Vec<String>,
+}
+
+/// Every device (and outlet) `tokens` can see, refreshing them as needed. Kasa is required;
+/// Tapo, and each strip's outlets, are best-effort.
+pub async fn fetch_devices<S: SecretItems>(
+    sessions: &Sessions<S>,
+    tokens: &mut TokenSet,
+    expand_children: bool,
+    verbose: bool,
+) -> Result<Fetched, CliError> {
+    let mut fetched =
+        fetch_cloud(sessions, tokens, CloudType::Kasa, expand_children, verbose).await?;
+    if tokens.has_tapo() {
+        match fetch_cloud(sessions, tokens, CloudType::Tapo, expand_children, verbose).await {
+            Ok(tapo) => {
+                let seen: HashSet<String> = fetched
+                    .devices
+                    .iter()
+                    .map(|d| d.info.id().to_string())
+                    .collect();
+                fetched.devices.extend(
+                    tapo.devices
+                        .into_iter()
+                        .filter(|d| !seen.contains(d.info.id())),
+                );
+                fetched.gaps.extend(tapo.gaps);
+            }
+            Err(e) => fetched
+                .gaps
+                .push(format!("Tapo's device list could not be read: {e}")),
+        }
+    }
+    Ok(fetched)
 }
 
 /// One cloud's device list, refreshing that cloud's token once if expired.
-async fn fetch_cloud(
-    ctx: &Ctx<'_>,
+async fn fetch_cloud<S: SecretItems>(
+    sessions: &Sessions<S>,
     tokens: &mut TokenSet,
     cloud: CloudType,
     expand_children: bool,
-) -> Result<Vec<Listed>, CliError> {
-    let verbose = ctx.verbose;
-    let device_list = session::with_refresh(ctx.sessions, tokens, cloud, verbose, |t| {
+    verbose: bool,
+) -> Result<Fetched, CliError> {
+    let device_list = session::with_refresh(sessions, tokens, cloud, verbose, |t| {
         let access = t.cloud_access(cloud);
         let term_id = t.term_id.clone();
         async move {
@@ -110,6 +142,7 @@ async fn fetch_cloud(
     let (token, regional_url) = tokens.cloud_access(cloud)?;
 
     let mut devices = Vec::new();
+    let mut gaps = Vec::new();
     for device_json in &device_list {
         let Some(info) = DeviceInfo::from_cloud(device_json, cloud) else {
             continue;
@@ -126,24 +159,30 @@ async fn fetch_cloud(
                 info.app_server_url.as_deref().unwrap_or(&regional_url),
                 &token,
                 &tokens.term_id,
-                ctx.verbose,
+                verbose,
                 cloud,
             )?;
             let parent = Device::new(client, info.id().to_string(), info.clone(), dtype, None);
             // A strip whose outlets can't be read still lists as itself.
-            if let Ok(children) = parent.get_children().await {
-                for child in children {
-                    devices.push(Listed {
-                        info: info.clone(),
-                        dtype: dtype.child_type(),
-                        child_id: Some(child.id),
-                        child_alias: Some(child.alias).filter(|a| !a.is_empty()),
-                    });
+            match parent.get_children().await {
+                Ok(children) => {
+                    for child in children {
+                        devices.push(Listed {
+                            info: info.clone(),
+                            dtype: dtype.child_type(),
+                            child_id: Some(child.id),
+                            child_alias: Some(child.alias).filter(|a| !a.is_empty()),
+                        });
+                    }
                 }
+                Err(e) => gaps.push(format!(
+                    "The outlets of `{}` could not be read: {e}",
+                    info.alias_or_name()
+                )),
             }
         }
     }
-    Ok(devices)
+    Ok(Fetched { devices, gaps })
 }
 
 /// Resolve a device by name or id across both clouds. Ladder:
@@ -160,7 +199,7 @@ pub async fn resolve_device(ctx: &Ctx<'_>, name_or_id: &str) -> Result<Device, C
 /// case-insensitive name → unique partial name; ambiguity names the
 /// candidates. An id names the strip itself, never one of its outlets (they
 /// share it), so outlets answer to no id.
-fn pick<'a>(devices: &'a [Listed], name_or_id: &str) -> Result<&'a Listed, CliError> {
+pub(crate) fn pick<'a>(devices: &'a [Listed], name_or_id: &str) -> Result<&'a Listed, CliError> {
     pk_cli_core::resolve::pick(
         devices,
         name_or_id,
@@ -176,7 +215,11 @@ fn pick<'a>(devices: &'a [Listed], name_or_id: &str) -> Result<&'a Listed, CliEr
     )
 }
 
-fn build_device(listed: &Listed, tokens: &TokenSet, verbose: bool) -> Result<Device, CliError> {
+pub(crate) fn build_device(
+    listed: &Listed,
+    tokens: &TokenSet,
+    verbose: bool,
+) -> Result<Device, CliError> {
     let cloud = listed.cloud();
     let (token, regional_url) = tokens.cloud_access(cloud)?;
     let client = DeviceClient::new(

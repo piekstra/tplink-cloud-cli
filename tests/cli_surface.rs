@@ -63,6 +63,7 @@ fn every_subcommand_help_renders() {
     // Catches clap runtime panics (a subcommand flag colliding with a global
     // like -q) that only surface when the subtree is built.
     for args in [
+        vec!["mcp", "--help"],
         vec!["auth", "--help"],
         vec!["auth", "login", "--help"],
         vec!["auth", "status", "--help"],

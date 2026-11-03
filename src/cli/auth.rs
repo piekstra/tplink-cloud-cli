@@ -8,6 +8,7 @@
 //! `--mfa-code`; non-interactively that parking is reported as an
 //! `mfa_required` DTO with exit 3.
 
+use pk_cli_auth::refresh_lock::RefreshLock;
 use pk_cli_auth::{AuthMethod, AuthStatus, LogoutArgs, SetCredentialArgs};
 use pk_cli_core::output::{self, emit_one};
 use pk_cli_core::CliError;
@@ -94,6 +95,8 @@ pub async fn login(ctx: &Ctx<'_>, args: &LoginOpts) -> Result<i32, CliError> {
             ));
         }
     }
+    // A stuck lock fails here, before anyone types a password or spends an MFA code.
+    RefreshLock::for_binary(crate::BIN)?.before_signin()?;
     let password = read_password(&args.base, prompt_ok)?;
 
     let pending = ctx.sessions.pending()?;
@@ -237,7 +240,7 @@ pub async fn login(ctx: &Ctx<'_>, args: &LoginOpts) -> Result<i32, CliError> {
         tapo_app_server_url: None,
         tapo_app_server_expires_at: None,
     };
-    ctx.sessions.store(&tokens)?;
+    RefreshLock::for_binary(crate::BIN)?.store_signin(|| ctx.sessions.store(&tokens))?;
     ctx.sessions.clear_pending()?;
 
     // Persist the identity the session belongs to (non-secret).
@@ -339,9 +342,20 @@ pub fn status(ctx: &Ctx<'_>) -> Result<(), CliError> {
 }
 
 pub fn logout(ctx: &Ctx<'_>, args: &LogoutArgs) -> Result<(), CliError> {
-    ctx.sessions.clear()?;
+    // The delete runs with or without the lock; a renewal in flight must not store the session
+    // again behind it.
+    RefreshLock::forget_for_binary(crate::BIN, || ctx.sessions.clear())?;
     if args.forget {
+        // Nothing records whether `mcp --new-token` ran, so this delete is ungated: a keyring that
+        // is not running, or a prompt declined, must not leave the config behind it.
+        let token = ctx.sessions.forget_connector_token();
         ctx.store.clear()?;
+        token.map_err(|failure| {
+            CliError::Keychain(format!(
+                "the session and config are cleared, but the connector token of `tplc mcp --http` \
+                 could not be removed, if there is one: {failure}"
+            ))
+        })?;
     }
     if ctx.json {
         output::json(&json!({
@@ -350,7 +364,14 @@ pub fn logout(ctx: &Ctx<'_>, args: &LogoutArgs) -> Result<(), CliError> {
             "forgot": args.forget,
         }));
     } else if !ctx.quiet {
-        eprintln!("logged out");
+        if args.forget {
+            eprintln!("logged out; connector token removed; config cleared");
+        } else {
+            eprintln!(
+                "logged out. The connector token of `tplc mcp --http` is still stored; use \
+                 `tplc auth logout --forget` to remove it too."
+            );
+        }
     }
     Ok(())
 }

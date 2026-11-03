@@ -413,8 +413,16 @@ impl TPLinkApi {
 
         if response.successful() {
             let result = response.result.unwrap_or_default();
+            // An empty token stored would read as "not logged in" for no reason anyone can see.
+            let token = result["token"]
+                .as_str()
+                .filter(|t| !t.is_empty())
+                .ok_or_else(|| AppError::Api {
+                    message: "the token refresh answered with no token".into(),
+                    error_code: None,
+                })?;
             return Ok(LoginResult {
-                token: result["token"].as_str().unwrap_or_default().to_string(),
+                token: token.to_string(),
                 refresh_token: result["refreshToken"].as_str().map(|s| s.to_string()),
                 regional_url: self.host.clone(),
             });

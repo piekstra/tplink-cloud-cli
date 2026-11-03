@@ -10,8 +10,8 @@ apps: the signed v2 account cloud (login, device list, device passthrough),
 the Kasa IoT cloud (device groups), and the Tapo NBU app-server (homes and
 rooms). A thin, TP-Link-specific layer over the shared
 [`cli-common`](https://github.com/piekstra/cli-common) `pk-cli-*` crates
-(v0.15.1: output, errors, confirm gate, reference ladder, keychain items,
-config, self-update, auth shapes). This repo owns only the vendor clients,
+(**v0.22.0**: output, errors, confirm gate, reference ladder, keychain items,
+config, self-update, auth shapes, refresh lock, mcp). This repo owns only the vendor clients,
 the device models, and the commands.
 
 ## Build, test, lint
@@ -33,9 +33,10 @@ Run `make verify` before considering a change done — it's exactly what CI runs
   `light`, `schedule`, `info`, `led`, `rooms`, `groups`, `api`); `cli/emit.rs`
   holds `Ctx` and the headed-list renderer. `dispatch` in `lib.rs` only
   translates and delegates — no command logic lives there.
+- `src/mcp.rs` — `tplc mcp`; see "The MCP tools".
 - `src/session.rs` — the keychain layout (one `session` item + a parked
   `mfa_pending` item under `piekstra.tplc`), legacy migrations, token
-  refresh, and `with_refresh` (the one "call; on an expired token refresh
+  refresh under the shared lock, and `with_refresh` (the one "call; on an expired token refresh
   once and retry" policy every cloud call goes through). `Sessions` is
   generic over a `SecretItems` seam so the migration order is unit-tested
   against an in-memory store.
@@ -83,6 +84,27 @@ Run `make verify` before considering a change done — it's exactly what CI runs
 - `api` is an RPC-by-method passthrough, deliberately not the family's HTTP
   `api <VERB> <PATH>` form (there are no paths to expose).
 
+## The MCP tools
+
+`src/mcp.rs` is `tplc mcp` (cli-common `DESIGN.md` §1.9). Three tools read; `tplink_power` and
+`tplink_light` change one device, follow my-q-cli's pattern, and are not read-only. A write names one
+device by its full name or id (`named_device` leaves the resolver's partial match out), is refused for
+a strip, a model `DeviceType` does not know and an offline device (`check_may_change`), can send only a
+`Change`, and returns the state read back with `confirmed`, also when the command's own answer was lost
+(`Sent::NoAnswer`). A new argument or tool goes on the lists in `src/mcp/tests.rs`, and a new tool in
+`packaging/mcpb/manifest.json` and README's table. The definitions stay under 8,000 characters together.
+No tool removes or unpairs a device, changes an account, a schedule, a room, a group, the LED or
+firmware, shares access, or reaches `tplc api`, whatever the CLI can do. A `get_sysinfo` answer carries
+the device's MAC address and coordinates: `read_state` copies named fields only, and must go on doing so.
+
+## Releasing
+
+Bump `version` in `Cargo.toml` and `packaging/mcpb/manifest.json`, add to `CHANGELOG.md`, merge, then push
+the tag `v<version>`. The workflow checks the tag, crate and manifest agree, builds the tarballs
+`self-update` finds and the `.mcpb`, publishes once all of them are there, and opens the Homebrew
+formula's pull request. A pull request that touches the workflow, packaging or dependencies runs
+everything but the publish as a dry run.
+
 ## Tests
 
 Offline, always. No test may read the OS keychain: `cargo test` produces an
@@ -94,6 +116,9 @@ command would prompt — and on a machine with a legacy `tplc` session, would
 `TPLC_TEST_KEYCHAIN=1`, on a machine whose keychain holds no `tplc` session.
 Everything else — `--help` everywhere, `info`, usage errors, the exit-6
 gate, login input validation, completions, the PII scan — runs by default.
+The real binary's `tests/mcp_stdio.rs` and `tests/mcp_http.rs` stop at calls that fail on their
+arguments for that reason, and `src/mcp/tests.rs` runs the live path against a stub of the clouds on
+127.0.0.1 over an in-memory keychain and a lock in the temp directory; no test can reach a real device.
 Live checks go through the installed binary by hand.
 
 ## Safety & privacy (public repo)

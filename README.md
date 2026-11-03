@@ -191,6 +191,107 @@ there.
 Other models still list and switch through the generic passthrough; they are
 just not classified.
 
+## Use with Claude
+
+`tplc mcp` serves five tools over MCP, so Claude can see your Kasa and Tapo devices and, when you ask,
+change one light, plug or outlet. There is no hosted service: the tools run on your computer, in your
+copy of `tplc`, and call TP-Link's cloud with your session.
+
+| Tool | Does | Changes a device |
+| --- | --- | --- |
+| `tplink_devices` | What do I have? Name, kind, online, strip, what the tools can change on it, and whether it has a meter, narrowed by `name` | no |
+| `tplink_device_state` | Is it on? Online, power, brightness, color or color temperature, a strip's outlets | no |
+| `tplink_energy` | What does it draw? Power, voltage, current and total now, or a year's months, or a month's days | no |
+| `tplink_power` | Turn one light, plug, wall switch or outlet on or off | **yes** |
+| `tplink_light` | Set one light's brightness, color or color temperature, which also turns it on | **yes** |
+
+The two that change a device are not read-only and carry `anthropic/requiresUserInteraction`, so a
+client that honors them asks you before every call. Each takes one device by its full name or its id.
+Part of a name is refused however unique, so "all" cannot reach the hallway light, and there is no
+list of devices, wildcard or group. A whole strip is refused, and the refusal names its outlets: one
+call changes one outlet. A model `tplc` does not know is refused too, because a Tapo account can list
+a lock or a camera, and an offline device is refused with nothing sent. Each returns the state read
+back from the device, about 0.3 and 1.3 seconds later, with `confirmed`: `true` only when that state
+shows the change. If it does not, or the read fails, a `note` says so. That is not a failure, and
+Claude is told not to send the command again. If the command's own answer is lost, the state read
+back settles it the same way, and the `note` says the outcome is unknown until it does.
+
+No tool can remove a device, edit a schedule, a room or a group, change a device's LED or firmware,
+change your account or share access, and none reaches `tplc api`. Toggling is left to the CLI, so a
+repeated call cannot undo itself.
+
+Results are concise by default (`response_format: "detailed"` adds a device's id, model and cloud), 25
+records a page with a cursor for more. A field a device left out is absent and never a default, an
+answer of the wrong shape is an error, and a device list missing the Tapo cloud or a strip's outlets
+says so in `note`. Each page reads TP-Link again, so a device added between pages can repeat or be
+skipped: for a count, read one call with `limit` up to 200. Device names are yours; the server tells
+Claude to treat them as data, not instructions. A device's MAC address and coordinates, which it
+reports alongside its state, never reach a result.
+
+The tools are worded for a model, so they differ from `--json`, which passes TP-Link's names through:
+`power: "on"` for `relay_state: 1` or `light_state.on_off: 1`, `power_w` for `power_mw`, `voltage_v` for
+`voltage_mv`, `current_a` for `current_ma`, `total_kwh` for `total_wh`, `energy_kwh` for `energy_wh`,
+and `kind: "other"` for a model the CLI calls a plug because it does not know it.
+
+**Sign in first.** Run `tplc auth login` in a terminal ([Setup](#setup)). Every path reads that session
+from the OS keychain (service `piekstra.tplc`), renews an expired token there under a lock every
+`tplc` process shares, and asks for nothing itself. When the session ends the tools say so and ask you
+to run it again. On macOS a program the keychain has not seen asks once per item, for the read and for
+the write a renewal makes; choose Always Allow for each.
+
+**Claude Code.** Add the `tplink-cloud-cli` plugin from the
+[piekstra plugin marketplace](https://github.com/piekstra/claude-plugins):
+
+```console
+$ claude plugin marketplace add piekstra/claude-plugins
+$ claude plugin install tplink-cloud-cli@piekstra-plugins
+```
+
+or register the server yourself:
+
+```console
+$ claude mcp add tplink -- tplc mcp
+```
+
+**Claude Desktop.** Download `tplc-<version>.mcpb` from the
+[latest release](https://github.com/piekstra/tplink-cloud-cli/releases/latest) and open it. It has no
+settings: install the CLI and sign in first, and the bundled `tplc` reads the same keychain session.
+A new version of the extension is a new program to the keychain and can ask again. macOS and Linux
+only; [`SECURITY.md`](SECURITY.md) says why there is no Windows build.
+
+Any other MCP client that launches a local server can run `tplc mcp`.
+
+**Claude on the web and mobile.** claude.ai reaches tools through a remote connector, so `tplc` serves
+the tools from your computer to a connector you deploy into your own Cloudflare account:
+
+```console
+$ tplc mcp --new-token            # once: a bearer token, saved in the keychain and printed for the Worker
+$ tplc mcp --http --port 8761     # serve on 127.0.0.1 only
+```
+
+The connector, [cli-common's `connector/`](https://github.com/piekstra/cli-common/tree/main/connector#tools-from-your-computer-home-modules),
+reaches that port through a Cloudflare Tunnel in your account; its README walks through the tunnel, the
+VPC service, a launchd agent that keeps the server running, and the `HOME_TPLINK_TOKEN` secret, with the
+threat model. `--http` binds 127.0.0.1 only, refuses to start without the token, and refuses any request
+whose `Host` is not loopback or that carries an `Origin`.
+
+It serves the three reads only. `--allow-writes` adds `tplink_power` and `tplink_light`, and then
+anyone holding the token can change your lights and plugs through your Worker, with no prompt unless
+the client asks for one; leave it off unless you want that. Your TP-Link session stays on your
+computer, but tool results do not: your device names, states and energy use pass through Cloudflare
+and reach Claude ([`SECURITY.md`](SECURITY.md)). While the computer sleeps, the tools answer that it is
+offline.
+
+After `tplc self-update`, restart the server: a running one keeps the old code, and its launchd agent
+restarts it only when it exits. Its start line names the version.
+
+```console
+$ launchctl kickstart -k gui/$(id -u)/com.piekstra.tplc-mcp-http
+```
+
+`self-update` does not reach a Claude Desktop extension, which runs its own copy. Install the new
+release's `.mcpb` too.
+
 ## For agents
 
 Every command takes `--json`; branch on the exit code, not the message
