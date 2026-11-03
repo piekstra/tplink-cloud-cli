@@ -104,6 +104,18 @@ pub(crate) fn ensure_provider_url(url: &str) -> Result<(), AppError> {
     })
 }
 
+/// [`ensure_provider_url`] for a device's own address, which comes fresh from the device list each
+/// time, so a sign-in would not change it and is not what to try.
+pub(crate) fn ensure_device_url(url: &str) -> Result<(), AppError> {
+    ensure_provider_url(url).map_err(|_| AppError::Api {
+        message: "TP-Link's device list gives this device an address that is not on a TP-Link \
+                  domain, so no credential was sent to it. Signing in again will not change \
+                  that, so report it"
+            .into(),
+        error_code: None,
+    })
+}
+
 /// A client that keeps a redirect on its host. A signed POST carries a password or a refresh token
 /// in its body, which a 307 or 308 re-sends, and a token in its query, so none may leave the host.
 pub(crate) fn client_builder() -> Result<reqwest::ClientBuilder, AppError> {

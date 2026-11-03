@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use serde_json::json;
 
-use super::client::{client_builder, ensure_provider_url};
+use super::client::{client_builder, ensure_device_url};
 use super::cloud_type::CloudType;
 use super::errors::*;
 use super::response::ApiResponse;
@@ -48,7 +48,7 @@ impl DeviceClient {
         cloud_type: CloudType,
         timeout: Duration,
     ) -> Result<Self, AppError> {
-        ensure_provider_url(host)?;
+        ensure_device_url(host)?;
         let client = client_builder()?
             .user_agent("Dalvik/2.1.0 (Linux; U; Android 14; Pixel Build/UP1A)")
             .timeout(timeout)
@@ -191,7 +191,13 @@ mod tests {
 
     #[test]
     fn a_device_url_on_another_host_gets_no_token() {
-        assert!(client_at("https://elsewhere.example").is_err());
+        let Err(err) = client_at("https://elsewhere.example") else {
+            panic!("the client was built");
+        };
+        let text = err.to_string();
+        assert!(text.contains("no credential"), "{text}");
+        assert!(!text.contains("auth login"), "{text}");
+        assert!(!text.contains("elsewhere"), "{text}");
     }
 
     #[test]

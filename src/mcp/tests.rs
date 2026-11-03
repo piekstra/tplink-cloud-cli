@@ -1566,6 +1566,7 @@ fn a_strip_on_another_host_is_a_gap_and_the_rest_still_lists() {
         "{got}"
     );
     assert!(!note.contains("elsewhere"), "{got}");
+    assert!(!note.contains("auth login"), "{got}");
 
     let got = call(&tools, POWER_TOOL, json!({"device": PLUG, "power": "on"}));
     assert!(got.is_error());

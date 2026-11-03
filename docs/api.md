@@ -20,8 +20,9 @@ each device in `getDeviceList`, and `serviceUrls` from `getAppServiceUrl`. A ses
 `regional_url`, `tapo_regional_url` and `tapo_app_server_url`. `ensure_provider_url` in `src/api/client.rs`
 lets a credential go to one only over `https` on `tplinkcloud.com`, `tplinknbu.com` or `tplinkra.com`, the
 domains in this table. A refused address is exit 5 and nothing is sent to it, or a gap naming the device if
-it is one strip's own. If a stored session is refused, run `tplc auth login`. If that is refused too, TP-Link
-serves that region from a domain this does not list, which then belongs in `PROVIDER_DOMAINS` and this table.
+it is one strip's own. If a stored session is refused, run `tplc auth login`. If that is refused too, or if
+the address is a device's own, which a sign-in cannot change, TP-Link serves it from a domain this does not
+list, which then belongs in `PROVIDER_DOMAINS` and this table.
 
 ## The v2 account cloud
 
