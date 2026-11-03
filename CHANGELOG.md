@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.3 — 2026-11-03
+
+- `NO_COLOR=1` no longer fails every command with a usage error (exit 2):
+  any non-empty `NO_COLOR` disables color, per no-color.org. Built on
+  cli-common v0.15.1 (was v0.8.0), whose `CommonArgs` read `NO_COLOR` as a
+  clap boolean.
+- The patched TLS stack (rustls 0.23.46, rustls-webpki 0.103.16,
+  webpki-roots 1.0.11) and tokio 1.54.1, from the lockfile.
+- `make install` builds from `Cargo.lock` (`cargo install --locked`).
+
 ## 0.2.2 — 2026-09-14
 
 - A Tapo device the **Kasa** cloud lists (it lists them too, typed

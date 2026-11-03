@@ -1428,8 +1428,8 @@ dependencies = [
 
 [[package]]
 name = "pk-cli-auth"
-version = "0.8.0"
-source = "git+https://github.com/piekstra/cli-common?tag=v0.8.0#fef75d76db5be6f20aa850b79183fc9970593e30"
+version = "0.15.1"
+source = "git+https://github.com/piekstra/cli-common?tag=v0.15.1#1873d2a744dd026599d89f0fa46820b2fa77510f"
 dependencies = [
  "clap",
  "pk-cli-core",
@@ -1440,8 +1440,8 @@ dependencies = [
 
 [[package]]
 name = "pk-cli-config"
-version = "0.8.0"
-source = "git+https://github.com/piekstra/cli-common?tag=v0.8.0#fef75d76db5be6f20aa850b79183fc9970593e30"
+version = "0.15.1"
+source = "git+https://github.com/piekstra/cli-common?tag=v0.15.1#1873d2a744dd026599d89f0fa46820b2fa77510f"
 dependencies = [
  "pk-cli-core",
  "serde",
@@ -1450,10 +1450,11 @@ dependencies = [
 
 [[package]]
 name = "pk-cli-core"
-version = "0.8.0"
-source = "git+https://github.com/piekstra/cli-common?tag=v0.8.0#fef75d76db5be6f20aa850b79183fc9970593e30"
+version = "0.15.1"
+source = "git+https://github.com/piekstra/cli-common?tag=v0.15.1#1873d2a744dd026599d89f0fa46820b2fa77510f"
 dependencies = [
  "clap",
+ "libc",
  "reqwest",
  "serde",
  "serde_json",
@@ -1461,8 +1462,8 @@ dependencies = [
 
 [[package]]
 name = "pk-cli-secrets"
-version = "0.8.0"
-source = "git+https://github.com/piekstra/cli-common?tag=v0.8.0#fef75d76db5be6f20aa850b79183fc9970593e30"
+version = "0.15.1"
+source = "git+https://github.com/piekstra/cli-common?tag=v0.15.1#1873d2a744dd026599d89f0fa46820b2fa77510f"
 dependencies = [
  "clap",
  "keyring",
@@ -1475,8 +1476,8 @@ dependencies = [
 
 [[package]]
 name = "pk-cli-selfupdate"
-version = "0.8.0"
-source = "git+https://github.com/piekstra/cli-common?tag=v0.8.0#fef75d76db5be6f20aa850b79183fc9970593e30"
+version = "0.15.1"
+source = "git+https://github.com/piekstra/cli-common?tag=v0.15.1#1873d2a744dd026599d89f0fa46820b2fa77510f"
 dependencies = [
  "clap",
  "flate2",
@@ -2360,7 +2361,7 @@ checksum = "8df9b6e13f2d32c91b9bd719c00d1958837bc7dec474d94952798cc8e69eeec3"
 
 [[package]]
 name = "tplink-cloud-cli"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "assert_cmd",
  "base64",

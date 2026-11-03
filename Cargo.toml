@@ -1,6 +1,6 @@
 [package]
 name = "tplink-cloud-cli"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2021"
 rust-version = "1.85"
 description = "TP-Link Kasa and Tapo smart-home devices from the terminal, over the TP-Link cloud API. Keychain-secured, agent-friendly."
@@ -24,11 +24,11 @@ clap = { version = "4", features = ["derive", "env"] }
 clap_complete = "4"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
-pk-cli-core = { git = "https://github.com/piekstra/cli-common", tag = "v0.8.0", features = ["reqwest"] }
-pk-cli-secrets = { git = "https://github.com/piekstra/cli-common", tag = "v0.8.0" }
-pk-cli-config = { git = "https://github.com/piekstra/cli-common", tag = "v0.8.0" }
-pk-cli-selfupdate = { git = "https://github.com/piekstra/cli-common", tag = "v0.8.0" }
-pk-cli-auth = { git = "https://github.com/piekstra/cli-common", tag = "v0.8.0" }
+pk-cli-core = { git = "https://github.com/piekstra/cli-common", tag = "v0.15.1", features = ["reqwest"] }
+pk-cli-secrets = { git = "https://github.com/piekstra/cli-common", tag = "v0.15.1" }
+pk-cli-config = { git = "https://github.com/piekstra/cli-common", tag = "v0.15.1" }
+pk-cli-selfupdate = { git = "https://github.com/piekstra/cli-common", tag = "v0.15.1" }
+pk-cli-auth = { git = "https://github.com/piekstra/cli-common", tag = "v0.15.1" }
 
 # The vendor client is async: the cloud round-trips fan out over two clouds
 # and a passthrough per device. A runtime is built per invocation only for
