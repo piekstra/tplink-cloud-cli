@@ -167,11 +167,8 @@ impl TPLinkApi {
             }
             Ok(api_response)
         } else {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            Err(AppError::Api {
-                message: format!("{}: {}", status, body),
-                error_code: None,
+            Err(AppError::BadStatus {
+                status: response.status().as_u16(),
             })
         }
     }
@@ -222,11 +219,8 @@ impl TPLinkApi {
             }
             Ok(api_response)
         } else {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            Err(AppError::Api {
-                message: format!("{}: {}", status, body),
-                error_code: None,
+            Err(AppError::BadStatus {
+                status: response.status().as_u16(),
             })
         }
     }

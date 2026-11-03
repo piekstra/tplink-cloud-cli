@@ -216,7 +216,10 @@ shows the change. If it does not, or the read fails, a `note` says so. That is n
 Claude is told not to send the command again. If the command's own answer is lost, the state read
 back settles it the same way, and the `note` says the outcome is unknown until it does. While part of
 the device list cannot be read, such as the Tapo cloud or a strip's outlets, a write by name is refused
-with nothing sent, because the name could mean a device in the missing part. Its id still works.
+with nothing sent, because the name could mean a device in the missing part. Its id still works. A
+strip the cloud lists as offline is not a missing part: its outlets could not take a command anyway, so
+a result names it in `note` and a name shared with one of them reaches the device that is online. A
+write that reaches its command 75 seconds or more after the call began sends nothing and says so.
 
 No tool can remove a device, edit a schedule, a room or a group, change a device's LED or firmware,
 change your account or share access, and none reaches `tplc api`. Toggling is left to the CLI, so a

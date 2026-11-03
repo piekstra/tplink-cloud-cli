@@ -48,9 +48,10 @@ pub enum AppError {
         error_code: Option<i32>,
     },
 
-    /// A status with no cloud answer in it, such as a gateway's 502.
-    #[error("TP-Link cloud error: {status}: {body}")]
-    BadStatus { status: u16, body: String },
+    /// A status with no cloud answer in it, such as a gateway's 502. The body stays out: a page
+    /// like that is anyone's text at any size, and could echo the URL, which holds the token.
+    #[error("TP-Link cloud answered HTTP {status}")]
+    BadStatus { status: u16 },
 
     #[error("not logged in; run `tplc auth login`")]
     NotAuthenticated,

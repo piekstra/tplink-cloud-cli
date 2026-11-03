@@ -250,7 +250,7 @@ fn what_became_of(sent: Result<Option<Value>, AppError>) -> Result<Sent, CliErro
         }
         Err(AppError::Http(e)) if !e.is_connect() => Ok(Sent::NoAnswer(e.to_string())),
         Err(AppError::Json(e)) => Ok(Sent::NoAnswer(format!("the answer was not JSON: {e}"))),
-        Err(AppError::BadStatus { status, .. }) if status >= 500 => {
+        Err(AppError::BadStatus { status }) if status >= 500 => {
             Ok(Sent::NoAnswer(format!("HTTP {status}")))
         }
         Err(e) => Err(e.into()),

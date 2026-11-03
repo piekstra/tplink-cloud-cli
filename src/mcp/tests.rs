@@ -1109,8 +1109,12 @@ struct StubState {
     /// The token a list is accepted with; any other is told it expired.
     valid_token: String,
     control: Control,
-    /// List one strip with `status: 0`.
-    offline_strip: bool,
+    /// List one strip, with this `status`.
+    strip_status: Option<i64>,
+    /// Answer every passthrough with a gateway's page that repeats the token.
+    gateway_pages: bool,
+    /// Answer the device list with one.
+    gateway_list: bool,
     /// The refresh answer's new refresh token.
     rotate_to: Option<String>,
 }
@@ -1208,6 +1212,10 @@ fn stub_answer(state: &Mutex<StubState>, base: &str, path: &str, body: &Value) -
             state.seen.push(Seen {
                 what: json!("getDeviceList"),
             });
+            if state.gateway_list {
+                let page = format!("<html>{GATEWAY_PAGE} {}</html>", state.valid_token);
+                return Reply::Status(502, page);
+            }
             if !token_ok {
                 let expired = json!({"error_code": -20651, "msg": "Token expired"});
                 return Reply::Json(expired.to_string());
@@ -1224,13 +1232,17 @@ fn stub_answer(state: &Mutex<StubState>, base: &str, path: &str, body: &Value) -
                     "DL110(US)",
                 ),
             ];
-            if state.offline_strip {
+            if let Some(status) = state.strip_status {
                 let mut strip = device(OFFLINE_STRIP_ID, OFFLINE_STRIP, "HS300(US)");
-                strip["status"] = json!(0);
+                strip["status"] = json!(status);
                 list.push(strip);
             }
             Reply::Json(json!({"error_code": 0, "result": {"deviceList": list}}).to_string())
         }
+        Some("passthrough") if state.gateway_pages => Reply::Status(
+            502,
+            format!("<html>{GATEWAY_PAGE} {}</html>", state.valid_token),
+        ),
         Some("passthrough") => {
             let inner: Value = body["params"]["requestData"]
                 .as_str()
@@ -1266,6 +1278,7 @@ fn stub_answer(state: &Mutex<StubState>, base: &str, path: &str, body: &Value) -
     }
 }
 
+const GATEWAY_PAGE: &str = "dummy-gateway-page-text";
 const OFFLINE_STRIP: &str = "Garage Strip";
 const OFFLINE_STRIP_ID: &str = "0000000000000000000000000000000000000009";
 
@@ -1507,7 +1520,7 @@ fn a_cloud_that_forbids_a_command_is_an_error_with_no_read_back() {
 #[test]
 fn a_strip_the_cloud_lists_as_offline_stops_nothing_and_is_said() {
     let (url, stub) = stub_clouds();
-    stub.lock().unwrap().offline_strip = true;
+    stub.lock().unwrap().strip_status = Some(0);
     let (tools, _) = live(&url, "kasa-token-dummy");
 
     let got = call(&tools, POWER_TOOL, json!({"device": PLUG, "power": "on"}));
@@ -1531,6 +1544,55 @@ fn a_strip_the_cloud_lists_as_offline_stops_nothing_and_is_said() {
             || r.what.to_string().contains(OFFLINE_STRIP_ID)),
         "{seen:?}"
     );
+}
+
+/// A gateway's page is anyone's text at any size, and this one repeats the request's token. It
+/// reaches no gap, note or tool error, on a read or on a write.
+#[test]
+fn a_gateway_page_reaches_no_result() {
+    let (url, stub) = stub_clouds();
+    {
+        let mut stub = stub.lock().unwrap();
+        stub.strip_status = Some(1);
+        stub.gateway_pages = true;
+    }
+    let (tools, _) = live(&url, "kasa-token-dummy");
+
+    let clean = |text: &str| {
+        assert!(text.contains("502"), "the status stays: {text}");
+        assert!(!text.contains(GATEWAY_PAGE), "{text}");
+        assert!(!text.contains("kasa-token-dummy"), "{text}");
+    };
+    let got = call(&tools, DEVICES_TOOL, json!({}));
+    let got = assert_fits(&tools, DEVICES_TOOL, &got);
+    clean(got["note"].as_str().unwrap());
+    let got = call(&tools, POWER_TOOL, json!({"device": PLUG, "power": "on"}));
+    assert!(got.is_error());
+    clean(got.text());
+    let got = call(&tools, STATE_TOOL, json!({"device": PLUG}));
+    assert!(got.is_error());
+    clean(got.text());
+    let got = call(
+        &tools,
+        POWER_TOOL,
+        json!({"device": PLUG_ID, "power": "on"}),
+    );
+    let got = assert_fits(&tools, POWER_TOOL, &got);
+    clean(got["note"].as_str().unwrap());
+}
+
+#[test]
+fn a_gateway_page_on_the_device_list_reaches_no_result() {
+    let (url, stub) = stub_clouds();
+    stub.lock().unwrap().gateway_list = true;
+    let (tools, _) = live(&url, "kasa-token-dummy");
+    let got = call(&tools, DEVICES_TOOL, json!({}));
+    assert!(got.is_error());
+    let text = got.text();
+    assert!(text.starts_with("upstream:"), "{text}");
+    assert!(text.contains("502"), "{text}");
+    assert!(!text.contains(GATEWAY_PAGE), "{text}");
+    assert!(!text.contains("kasa-token-dummy"), "{text}");
 }
 
 /// The list came back short because Tapo failed: real clients, and no relay command.

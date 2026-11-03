@@ -135,11 +135,8 @@ impl DeviceClient {
             .await?;
 
         if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
             return Err(AppError::BadStatus {
-                status: status.as_u16(),
-                body,
+                status: response.status().as_u16(),
             });
         }
 

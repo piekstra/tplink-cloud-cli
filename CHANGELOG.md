@@ -13,6 +13,8 @@
 - **Security fix:** a failed request's error no longer carries its URL. The device passthrough and the
   Kasa groups call put the session token in the query string, so a connection error printed the token,
   and `--json` carried it.
+- A gateway's error page no longer reaches an error message: a non-2xx from the device passthrough or
+  the account cloud says its status alone, since the page could repeat the URL and its token.
 - A refresh with no token in the answer is an error, not an empty session.
 - Token renewal runs under a lock every `tplc` process shares, reads the session again there, and writes
   it once before the request, so a server and a terminal cannot spend one refresh token twice.
