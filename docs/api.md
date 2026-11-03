@@ -85,7 +85,13 @@ code as a *string* or an int. `TPLinkApi::login` checks both levels.
 4. Refresh: `POST {regional}/api/v2/account/refreshToken`
    `{"appType", "refreshToken", "terminalUUID"}` → new `token` (and
    possibly a new `refreshToken`). Done once, on `-20651`, then the call is
-   retried; `-20655` means log in again.
+   retried; `-20655` means log in again. `session::refresh` holds a lock every
+   `tplc` process shares for this, reads the session again under it, takes
+   another process's renewal when there is one, and writes the session once
+   before the POST, so a keychain that refuses writes spends nothing. A server
+   and a terminal can hold the same expired token. The Tapo app-server URL
+   cached in the session is written under the same lock, over the session as
+   it is then, so a command holding an older copy cannot restore a retired token.
 
 The session `tplc` stores (one keychain item, `piekstra.tplc/session`):
 Kasa `token`/`refresh_token`/`regional_url`, `username`, `term_id`, the Tapo
@@ -146,6 +152,26 @@ Each answer carries `err_code`.
   seven 0/1 flags Sunday-first; `etime_opt: -1` means no end action.
 - Timeouts: passthrough waits up to 600 s (the cloud holds the request
   while it wakes the device); everything else 15–30 s.
+
+### What `tplc mcp` trusts of a passthrough answer
+
+- `passthrough` answers with the device's own reply, in which `err_code` can
+  refuse a command the cloud calls a success. `tplink_power` and `tplink_light`
+  read it as a refusal. A body that is not JSON or a lost connection is not a
+  refusal: the command may have landed, so they read the state back and say the
+  outcome is unknown.
+- `Device::passthrough` falls back to the whole strip's reply when it does not
+  find a child's id, so `read_state` requires the record's `id` to be the
+  outlet's.
+- `get_sysinfo` carries `mac`, `latitude_i` and `longitude_i`. Results copy named
+  fields only.
+- A light's `color_temp` of 0 means color mode, where `hue` and `saturation` apply.
+  A nonzero one means white, where they do not.
+- `get_realtime` reports `power_mw`, `voltage_mv`, `current_ma`, `total_wh` on newer
+  firmware and `power`, `voltage`, `current`, `total` in base units on older. The
+  stat lists likewise report `energy_wh` or `energy`. The read-back and the older
+  shapes follow the fixtures and have not been checked against a device in a test
+  (2026-11-03).
 
 ## The Kasa IoT cloud — device groups (`src/cli/groups.rs`)
 

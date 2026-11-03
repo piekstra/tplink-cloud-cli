@@ -10,7 +10,7 @@
 //! |--------------------------------------------------|--------------|------|
 //! | `Auth`, `MfaRequired`, `TokenExpired`, `NotAuthenticated` | `Auth`  | 3 |
 //! | `DeviceNotFound`                                 | `NotFound`   | 4    |
-//! | `DeviceOffline`, `Api`, `Http`, `Json`           | `Upstream`   | 5    |
+//! | `DeviceOffline`, `Api`, `BadStatus`, `Http`, `Json` | `Upstream` | 5   |
 //! | `InvalidInput`, `UnsupportedOperation`           | `Usage`      | 2    |
 //! | `Io`                                             | `Other`      | 1    |
 
@@ -48,6 +48,11 @@ pub enum AppError {
         error_code: Option<i32>,
     },
 
+    /// A status with no cloud answer in it, such as a gateway's 502. The body stays out: a page
+    /// like that is anyone's text at any size, and could echo the URL, which holds the token.
+    #[error("TP-Link cloud answered HTTP {status}")]
+    BadStatus { status: u16 },
+
     #[error("not logged in; run `tplc auth login`")]
     NotAuthenticated,
 
@@ -57,14 +62,24 @@ pub enum AppError {
     #[error("{0}")]
     InvalidInput(String),
 
+    /// Without its URL, through the `From` below.
     #[error(transparent)]
-    Http(#[from] reqwest::Error),
+    Http(reqwest::Error),
 
     #[error("parsing JSON: {0}")]
     Json(#[from] serde_json::Error),
 
     #[error(transparent)]
     Io(#[from] std::io::Error),
+}
+
+/// A reqwest error prints the URL it was for, and every request to these clouds carries the
+/// session token in its query. This is the one way a reqwest error becomes an `AppError`, so
+/// no message, `--json` error or tool result can repeat the token.
+impl From<reqwest::Error> for AppError {
+    fn from(e: reqwest::Error) -> Self {
+        AppError::Http(e.without_url())
+    }
 }
 
 fn code_suffix(code: Option<i32>) -> String {
@@ -94,6 +109,7 @@ impl From<AppError> for CliError {
             AppError::DeviceNotFound(_) => CliError::NotFound(msg),
             AppError::DeviceOffline(_)
             | AppError::Api { .. }
+            | AppError::BadStatus { .. }
             | AppError::Http(_)
             | AppError::Json(_) => CliError::Upstream(msg),
             AppError::InvalidInput(_) | AppError::UnsupportedOperation(_) => CliError::Usage(msg),
@@ -147,6 +163,30 @@ mod tests {
             let cli: CliError = err.into();
             assert_eq!(cli.exit_code(), code, "{cli}");
         }
+    }
+
+    /// A real producer: a client with nothing to connect to, its URL holding a token as the
+    /// clouds' requests do.
+    #[test]
+    fn a_failed_request_does_not_repeat_the_token_in_its_url() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let token = "kasa-token-dummy";
+        let refused = runtime
+            .block_on(
+                reqwest::Client::new()
+                    .post(format!("http://127.0.0.1:9/?token={token}"))
+                    .send(),
+            )
+            .unwrap_err();
+        assert!(refused.to_string().contains(token), "{refused}");
+        let app: AppError = refused.into();
+        assert!(!app.to_string().contains(token), "{app}");
+        let cli: CliError = app.into();
+        assert!(!cli.to_string().contains(token), "{cli}");
+        assert_eq!(cli.exit_code(), 5);
     }
 
     #[test]

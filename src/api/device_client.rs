@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::time::Duration;
 
 use reqwest::Certificate;
 use serde_json::json;
@@ -10,6 +11,9 @@ use super::signing::get_signing_headers;
 use crate::error::AppError;
 
 const CA_CERT_PEM: &[u8] = include_bytes!("../../certs/tplink-ca-chain.pem");
+
+/// How long a command in a terminal waits for the cloud to reach a device (docs/api.md).
+pub const PASSTHROUGH_TIMEOUT: Duration = Duration::from_secs(600);
 
 pub struct DeviceClient {
     client: reqwest::Client,
@@ -27,11 +31,30 @@ impl DeviceClient {
         verbose: bool,
         cloud_type: CloudType,
     ) -> Result<Self, AppError> {
+        Self::with_timeout(
+            host,
+            token,
+            term_id,
+            verbose,
+            cloud_type,
+            PASSTHROUGH_TIMEOUT,
+        )
+    }
+
+    /// As [`new`](Self::new), waiting no longer than `timeout` for each request.
+    pub fn with_timeout(
+        host: &str,
+        token: &str,
+        term_id: &str,
+        verbose: bool,
+        cloud_type: CloudType,
+        timeout: Duration,
+    ) -> Result<Self, AppError> {
         let cert = Certificate::from_pem(CA_CERT_PEM)?;
         let client = reqwest::Client::builder()
             .add_root_certificate(cert)
             .user_agent("Dalvik/2.1.0 (Linux; U; Android 14; Pixel Build/UP1A)")
-            .timeout(std::time::Duration::from_secs(600))
+            .timeout(timeout)
             .build()?;
 
         let mut query_params = HashMap::new();
@@ -112,11 +135,8 @@ impl DeviceClient {
             .await?;
 
         if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            return Err(AppError::Api {
-                message: format!("{}: {}", status, body),
-                error_code: None,
+            return Err(AppError::BadStatus {
+                status: response.status().as_u16(),
             });
         }
 

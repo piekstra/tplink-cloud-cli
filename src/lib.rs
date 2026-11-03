@@ -10,6 +10,7 @@ pub mod api;
 pub mod cli;
 pub mod config;
 pub mod error;
+pub mod mcp;
 pub mod models;
 pub mod resolve;
 pub mod session;
@@ -49,8 +50,19 @@ pub fn run(cli: &Cli) -> Result<i32, CliError> {
                 target: env!("BUILD_TARGET").into(),
                 current: env!("CARGO_PKG_VERSION").into(),
             }
-            .run(args, cli.common.json, cli.common.quiet)
+            .run_noting(
+                args,
+                cli.common.json,
+                cli.common.quiet,
+                &pk_cli_mcp::restart_note(BIN),
+            )
             .map(|()| 0)
+        }
+        // Before the config and the session are read, and outside the runtime below:
+        // `tools/list` touches no credential, the server runs its own runtime, and each call
+        // reads the session as it is then, so a later `auth login` applies to a running server.
+        Command::Mcp(args) => {
+            return pk_cli_mcp::run(args, mcp::TplinkTools::new(mcp::LiveSource::new())).map(|()| 0)
         }
         Command::Completions { shell } => {
             clap_complete::generate(*shell, &mut Cli::command(), BIN, &mut std::io::stdout());
@@ -111,7 +123,7 @@ async fn dispatch(
         }
         Command::Auth(AuthCmd::Status) | Command::Status => cli::auth::status(ctx)?,
         Command::Auth(AuthCmd::Logout(args)) | Command::Logout(args) => {
-            cli::auth::logout(ctx, args)?
+            return cli::auth::logout(ctx, args)
         }
         Command::Devices(cmd) => cli::devices::handle(ctx, cmd).await?,
         Command::Power(cmd) => cli::power::handle(ctx, cmd).await?,
@@ -126,6 +138,7 @@ async fn dispatch(
         Command::Auth(AuthCmd::SetCredential(_))
         | Command::Config(_)
         | Command::SelfUpdate(_)
+        | Command::Mcp(_)
         | Command::Completions { .. }
         | Command::Info { cmd: None } => unreachable!("handled before the runtime"),
     }
@@ -145,7 +158,7 @@ pub fn info() -> CliInfo {
         },
         &[
             "devices", "power", "energy", "light", "schedule", "info", "led", "rooms", "groups",
-            "api",
+            "api", "mcp",
         ],
     )
     .with_profiles(&[SMART_HOME_PROFILE])

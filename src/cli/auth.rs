@@ -8,6 +8,7 @@
 //! `--mfa-code`; non-interactively that parking is reported as an
 //! `mfa_required` DTO with exit 3.
 
+use pk_cli_auth::refresh_lock::RefreshLock;
 use pk_cli_auth::{AuthMethod, AuthStatus, LogoutArgs, SetCredentialArgs};
 use pk_cli_core::output::{self, emit_one};
 use pk_cli_core::CliError;
@@ -94,6 +95,8 @@ pub async fn login(ctx: &Ctx<'_>, args: &LoginOpts) -> Result<i32, CliError> {
             ));
         }
     }
+    // A stuck lock fails here, before anyone types a password or spends an MFA code.
+    RefreshLock::for_binary(crate::BIN)?.before_signin()?;
     let password = read_password(&args.base, prompt_ok)?;
 
     let pending = ctx.sessions.pending()?;
@@ -237,7 +240,7 @@ pub async fn login(ctx: &Ctx<'_>, args: &LoginOpts) -> Result<i32, CliError> {
         tapo_app_server_url: None,
         tapo_app_server_expires_at: None,
     };
-    ctx.sessions.store(&tokens)?;
+    RefreshLock::for_binary(crate::BIN)?.store_signin(|| ctx.sessions.store(&tokens))?;
     ctx.sessions.clear_pending()?;
 
     // Persist the identity the session belongs to (non-secret).
@@ -338,21 +341,60 @@ pub fn status(ctx: &Ctx<'_>) -> Result<(), CliError> {
     Ok(())
 }
 
-pub fn logout(ctx: &Ctx<'_>, args: &LogoutArgs) -> Result<(), CliError> {
-    ctx.sessions.clear()?;
+pub fn logout(ctx: &Ctx<'_>, args: &LogoutArgs) -> Result<i32, CliError> {
+    // The delete runs with or without the lock; a renewal in flight must not store the session
+    // again behind it.
+    RefreshLock::forget_for_binary(crate::BIN, || ctx.sessions.clear())?;
+    let mut token_left = None;
     if args.forget {
+        // Nothing records whether `mcp --new-token` ran, so this delete is ungated: a keyring that
+        // is not running, or a prompt declined, must not leave the config behind it.
+        token_left = ctx.sessions.forget_connector_token().err().map(|failure| {
+            CliError::Keychain(format!(
+                "the session and config are cleared, but the connector token of `tplc mcp --http` \
+                 could not be removed, if there is one: {failure}"
+            ))
+        });
         ctx.store.clear()?;
     }
     if ctx.json {
-        output::json(&json!({
-            "schema": "auth-logout/v1",
-            "status": "logged_out",
-            "forgot": args.forget,
-        }));
-    } else if !ctx.quiet {
-        eprintln!("logged out");
+        let (report, code) = logout_report(args.forget, token_left.as_ref());
+        output::json(&report);
+        // The logout happened and this is its one document, so the leftover token is a line on
+        // stderr and the exit code: an error returned from here would print a second document.
+        if let Some(left) = token_left {
+            eprintln!("error: {left}");
+        }
+        return Ok(code);
     }
-    Ok(())
+    if let Some(left) = token_left {
+        return Err(left);
+    }
+    if !ctx.quiet {
+        if args.forget {
+            eprintln!(
+                "logged out; any connector token removed from the keychain (a running `tplc mcp \
+                 --http` keeps its own until it stops); config cleared"
+            );
+        } else {
+            eprintln!("logged out");
+        }
+    }
+    Ok(0)
+}
+
+/// The one `auth-logout/v1` document, and the exit code that goes with it.
+fn logout_report(forget: bool, token_left: Option<&CliError>) -> (Value, i32) {
+    let mut report = json!({
+        "schema": "auth-logout/v1",
+        "status": "logged_out",
+        "forgot": forget,
+    });
+    if forget {
+        // True also when there was none.
+        report["connector_token_removed"] = json!(token_left.is_none());
+    }
+    (report, token_left.map_or(0, CliError::exit_code))
 }
 
 /// The stored secret is a session minted by the cloud, not a credential a
@@ -362,4 +404,29 @@ pub fn set_credential(_args: &SetCredentialArgs) -> Result<(), CliError> {
     Err(CliError::Usage(
         "tplc stores a login session, not a raw credential; run `tplc auth login --stdin --username you@example.com` (password on stdin) instead".into(),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A failed delete cannot be arranged here without a real keychain, so the document and the
+    /// code are held at the seam that makes them.
+    #[test]
+    fn a_leftover_connector_token_is_in_the_one_document_and_the_exit_code() {
+        let left = CliError::Keychain("dummy failure".into());
+        let (report, code) = logout_report(true, Some(&left));
+        assert_eq!(report["connector_token_removed"], false);
+        assert_eq!(report["status"], "logged_out");
+        assert_eq!(code, left.exit_code());
+        assert_ne!(code, 0);
+
+        let (report, code) = logout_report(true, None);
+        assert_eq!(report["connector_token_removed"], true);
+        assert_eq!(code, 0);
+
+        let (report, code) = logout_report(false, None);
+        assert!(report.get("connector_token_removed").is_none(), "{report}");
+        assert_eq!(code, 0);
+    }
 }

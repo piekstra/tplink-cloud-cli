@@ -1,0 +1,74 @@
+{
+  "manifest_version": "0.3",
+  "name": "tplc",
+  "display_name": "TP-Link Kasa and Tapo (tplc)",
+  "version": "0.3.0",
+  "description": "See and control your own TP-Link Kasa and Tapo lights, plugs and outlets, through the open-source tplc CLI.",
+  "long_description": "Ask Claude what your TP-Link devices are, whether one is on, what a plug draws, and to turn one light, plug or outlet on or off or set a light's brightness or color. Five tools: tplink_devices, tplink_device_state and tplink_energy read; tplink_power and tplink_light change one named device, and Claude asks you before each call. No tool can change a whole strip or several devices at once, control a lock, camera or other model this CLI does not know, edit a schedule or a room, or touch your account. The extension asks for no password: first install the tplc CLI and run `tplc auth login` in a terminal, which stores the session in your OS keychain. The bundled tplc reads it from there and renews it in place. When a session ends, the tools say so; run `tplc auth login` again. What the tools return goes to Claude as part of your conversation. On macOS the first call asks for keychain access, and a renewal asks to write the session back; choose Always Allow for each. A new version of the extension is a new program to the keychain and can ask again. Unofficial; not affiliated with or endorsed by TP-Link.",
+  "author": {
+    "name": "piekstra",
+    "url": "https://github.com/piekstra"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/piekstra/tplink-cloud-cli"
+  },
+  "homepage": "https://github.com/piekstra/tplink-cloud-cli",
+  "documentation": "https://github.com/piekstra/tplink-cloud-cli#use-with-claude",
+  "support": "https://github.com/piekstra/tplink-cloud-cli/issues",
+  "license": "GPL-3.0",
+  "keywords": [
+    "tp-link",
+    "kasa",
+    "tapo",
+    "smart-home",
+    "lights"
+  ],
+  "server": {
+    "type": "binary",
+    "entry_point": "server/tplc",
+    "mcp_config": {
+      "command": "${__dirname}/server/tplc",
+      "args": [
+        "mcp"
+      ],
+      "platform_overrides": {
+        "linux": {
+          "command": "${__dirname}/server/linux/tplc",
+          "args": [
+            "mcp"
+          ]
+        }
+      }
+    }
+  },
+  "tools": [
+    {
+      "name": "tplink_devices",
+      "description": "What devices you have: name, kind, online, and what the tools can change on each."
+    },
+    {
+      "name": "tplink_device_state",
+      "description": "Whether a device is on, with its brightness and color, and a strip's outlets."
+    },
+    {
+      "name": "tplink_energy",
+      "description": "What a plug or outlet with a meter draws now, or used by day or month."
+    },
+    {
+      "name": "tplink_power",
+      "description": "Turn one named light, plug, wall switch or outlet on or off, and return the state read back."
+    },
+    {
+      "name": "tplink_light",
+      "description": "Set one named light's brightness, color or color temperature, and return the state read back."
+    }
+  ],
+  "tools_generated": false,
+  "compatibility": {
+    "platforms": [
+      "darwin",
+      "linux"
+    ]
+  }
+}

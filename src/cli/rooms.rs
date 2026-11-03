@@ -215,7 +215,9 @@ async fn app_server_url(ctx: &Ctx<'_>, tokens: &mut TokenSet) -> Result<String, 
     tokens.tapo_app_server_url = Some(url.clone());
     tokens.tapo_app_server_expires_at = Some(now + APP_SERVER_TTL_SECS);
     // A failed cache write is not worth failing the command over.
-    let _ = ctx.sessions.store(tokens);
+    let _ = ctx
+        .sessions
+        .remember_app_server(&url, now + APP_SERVER_TTL_SECS);
     Ok(url)
 }
 

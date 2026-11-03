@@ -2,18 +2,19 @@
 //! every device command starts from.
 
 use std::collections::HashSet;
+use std::time::{Duration, Instant};
 
 use pk_cli_core::CliError;
 use serde_json::{json, Value};
 
 use crate::api::client::TPLinkApi;
 use crate::api::cloud_type::CloudType;
-use crate::api::device_client::DeviceClient;
+use crate::api::device_client::{DeviceClient, PASSTHROUGH_TIMEOUT};
 use crate::cli::emit::Ctx;
 use crate::models::device::Device;
 use crate::models::device_info::DeviceInfo;
 use crate::models::device_type::DeviceType;
-use crate::session::{self, TokenSet};
+use crate::session::{self, SecretItems, Sessions, TokenSet};
 
 /// One addressable device: a cloud-listed device, or one outlet of a
 /// multi-outlet strip (then `child_id`/`child_alias` are set and `info` is
@@ -71,33 +72,148 @@ pub async fn fetch_all_devices_with(
     expand_children: bool,
 ) -> Result<(Vec<Listed>, TokenSet), CliError> {
     let mut tokens = ctx.session()?;
-    let mut devices = fetch_cloud(ctx, &mut tokens, CloudType::Kasa, expand_children).await?;
-    if tokens.has_tapo() {
-        match fetch_cloud(ctx, &mut tokens, CloudType::Tapo, expand_children).await {
-            Ok(tapo) => {
-                let seen: HashSet<String> =
-                    devices.iter().map(|d| d.info.id().to_string()).collect();
-                devices.extend(tapo.into_iter().filter(|d| !seen.contains(d.info.id())));
-            }
-            Err(e) => {
-                if ctx.verbose {
-                    eprintln!("Tapo device fetch failed (non-fatal): {e}");
-                }
-            }
+    let fetched = fetch_devices(
+        ctx.sessions,
+        &mut tokens,
+        expand_children,
+        ctx.verbose,
+        Patience::CLI,
+    )
+    .await?;
+    if ctx.verbose {
+        for gap in &fetched.gaps {
+            eprintln!("{gap} (non-fatal)");
         }
     }
-    Ok((devices, tokens))
+    Ok((fetched.devices, tokens))
+}
+
+/// How long discovery waits. A person at a terminal can wait out a device the cloud is trying to
+/// wake. A tool has to answer inside its call's limit, while the answer can still say what
+/// became of a command.
+#[derive(Debug, Clone, Copy)]
+pub struct Patience {
+    /// Each request to a device.
+    pub request: Duration,
+    /// Once this has passed, no further strip's outlets are asked for.
+    pub listing: Option<Duration>,
+    /// Whether a strip the cloud lists as offline is asked for its outlets anyway, in case the
+    /// list is behind.
+    pub asks_offline_strips: bool,
+}
+
+impl Patience {
+    pub const CLI: Patience = Patience {
+        request: PASSTHROUGH_TIMEOUT,
+        listing: None,
+        asks_offline_strips: true,
+    };
+}
+
+/// The devices both clouds list, and what could not be read of them.
+pub struct Fetched {
+    pub devices: Vec<Listed>,
+    /// A cloud or an answering strip's outlets that are missing, in a sentence. A reader told
+    /// "these are your devices" can be told this too, and what is missing could take a command.
+    pub gaps: Vec<String>,
+    /// Strips the cloud lists as offline, whose outlets were not asked for, in a sentence. An
+    /// outlet there takes no command until the strip is back, so this is said and stops nothing.
+    pub unseen: Vec<String>,
+}
+
+impl Fetched {
+    /// What a reader should be told about the list, if anything.
+    pub fn note(&self) -> Option<String> {
+        let parts: Vec<&str> = self
+            .gaps
+            .iter()
+            .chain(&self.unseen)
+            .map(String::as_str)
+            .collect();
+        (!parts.is_empty()).then(|| parts.join(" "))
+    }
+}
+
+/// Every device (and outlet) `tokens` can see, refreshing them as needed. Kasa is required;
+/// Tapo, and each strip's outlets, are best-effort.
+pub async fn fetch_devices<S: SecretItems>(
+    sessions: &Sessions<S>,
+    tokens: &mut TokenSet,
+    expand_children: bool,
+    verbose: bool,
+    patience: Patience,
+) -> Result<Fetched, CliError> {
+    let wait = Listing {
+        expand_children,
+        verbose,
+        patience,
+        started: Instant::now(),
+    };
+    let mut fetched = fetch_cloud(sessions, tokens, CloudType::Kasa, wait).await?;
+    if tokens.has_tapo() {
+        match fetch_cloud(sessions, tokens, CloudType::Tapo, wait).await {
+            Ok(tapo) => {
+                let seen: HashSet<String> = fetched
+                    .devices
+                    .iter()
+                    .map(|d| d.info.id().to_string())
+                    .collect();
+                fetched.devices.extend(
+                    tapo.devices
+                        .into_iter()
+                        .filter(|d| !seen.contains(d.info.id())),
+                );
+                fetched.gaps.extend(tapo.gaps);
+                fetched.unseen.extend(tapo.unseen);
+            }
+            Err(e) => fetched.gaps.push(tapo_gap(&e)),
+        }
+    }
+    Ok(fetched)
+}
+
+/// Tapo's list failing, with what to do about it. A retry does nothing for a lapsed session.
+fn tapo_gap(e: &CliError) -> String {
+    let text = e.to_string();
+    let remedy = if matches!(e, CliError::Auth(_)) && !text.contains("auth login") {
+        " Run `tplc auth login` in a terminal."
+    } else {
+        ""
+    };
+    format!("Tapo's device list could not be read: {text}{remedy}")
+}
+
+/// One discovery's settings, and when it began.
+#[derive(Clone, Copy)]
+struct Listing {
+    expand_children: bool,
+    verbose: bool,
+    patience: Patience,
+    started: Instant,
+}
+
+impl Listing {
+    fn out_of_time(&self) -> bool {
+        self.patience
+            .listing
+            .is_some_and(|limit| self.started.elapsed() >= limit)
+    }
 }
 
 /// One cloud's device list, refreshing that cloud's token once if expired.
-async fn fetch_cloud(
-    ctx: &Ctx<'_>,
+async fn fetch_cloud<S: SecretItems>(
+    sessions: &Sessions<S>,
     tokens: &mut TokenSet,
     cloud: CloudType,
-    expand_children: bool,
-) -> Result<Vec<Listed>, CliError> {
-    let verbose = ctx.verbose;
-    let device_list = session::with_refresh(ctx.sessions, tokens, cloud, verbose, |t| {
+    wait: Listing,
+) -> Result<Fetched, CliError> {
+    let Listing {
+        expand_children,
+        verbose,
+        patience,
+        ..
+    } = wait;
+    let device_list = session::with_refresh(sessions, tokens, cloud, verbose, |t| {
         let access = t.cloud_access(cloud);
         let term_id = t.term_id.clone();
         async move {
@@ -110,6 +226,8 @@ async fn fetch_cloud(
     let (token, regional_url) = tokens.cloud_access(cloud)?;
 
     let mut devices = Vec::new();
+    let mut gaps = Vec::new();
+    let mut unseen = Vec::new();
     for device_json in &device_list {
         let Some(info) = DeviceInfo::from_cloud(device_json, cloud) else {
             continue;
@@ -122,28 +240,53 @@ async fn fetch_cloud(
             child_alias: None,
         });
         if expand_children && dtype.has_children() {
-            let client = DeviceClient::new(
+            if info.status == Some(0) && !patience.asks_offline_strips {
+                unseen.push(format!(
+                    "The outlets of `{}` were not read, because it is offline.",
+                    info.alias_or_name()
+                ));
+                continue;
+            }
+            if wait.out_of_time() {
+                gaps.push(format!(
+                    "The outlets of `{}` were not read, for lack of time.",
+                    info.alias_or_name()
+                ));
+                continue;
+            }
+            let client = DeviceClient::with_timeout(
                 info.app_server_url.as_deref().unwrap_or(&regional_url),
                 &token,
                 &tokens.term_id,
-                ctx.verbose,
+                verbose,
                 cloud,
+                patience.request,
             )?;
             let parent = Device::new(client, info.id().to_string(), info.clone(), dtype, None);
             // A strip whose outlets can't be read still lists as itself.
-            if let Ok(children) = parent.get_children().await {
-                for child in children {
-                    devices.push(Listed {
-                        info: info.clone(),
-                        dtype: dtype.child_type(),
-                        child_id: Some(child.id),
-                        child_alias: Some(child.alias).filter(|a| !a.is_empty()),
-                    });
+            match parent.get_children().await {
+                Ok(children) => {
+                    for child in children {
+                        devices.push(Listed {
+                            info: info.clone(),
+                            dtype: dtype.child_type(),
+                            child_id: Some(child.id),
+                            child_alias: Some(child.alias).filter(|a| !a.is_empty()),
+                        });
+                    }
                 }
+                Err(e) => gaps.push(format!(
+                    "The outlets of `{}` could not be read: {e}",
+                    info.alias_or_name()
+                )),
             }
         }
     }
-    Ok(devices)
+    Ok(Fetched {
+        devices,
+        gaps,
+        unseen,
+    })
 }
 
 /// Resolve a device by name or id across both clouds. Ladder:
@@ -160,7 +303,7 @@ pub async fn resolve_device(ctx: &Ctx<'_>, name_or_id: &str) -> Result<Device, C
 /// case-insensitive name → unique partial name; ambiguity names the
 /// candidates. An id names the strip itself, never one of its outlets (they
 /// share it), so outlets answer to no id.
-fn pick<'a>(devices: &'a [Listed], name_or_id: &str) -> Result<&'a Listed, CliError> {
+pub(crate) fn pick<'a>(devices: &'a [Listed], name_or_id: &str) -> Result<&'a Listed, CliError> {
     pk_cli_core::resolve::pick(
         devices,
         name_or_id,
@@ -176,10 +319,24 @@ fn pick<'a>(devices: &'a [Listed], name_or_id: &str) -> Result<&'a Listed, CliEr
     )
 }
 
-fn build_device(listed: &Listed, tokens: &TokenSet, verbose: bool) -> Result<Device, CliError> {
+pub(crate) fn build_device(
+    listed: &Listed,
+    tokens: &TokenSet,
+    verbose: bool,
+) -> Result<Device, CliError> {
+    build_device_waiting(listed, tokens, verbose, PASSTHROUGH_TIMEOUT)
+}
+
+/// As [`build_device`], waiting no longer than `timeout` for each request.
+pub(crate) fn build_device_waiting(
+    listed: &Listed,
+    tokens: &TokenSet,
+    verbose: bool,
+    timeout: Duration,
+) -> Result<Device, CliError> {
     let cloud = listed.cloud();
     let (token, regional_url) = tokens.cloud_access(cloud)?;
-    let client = DeviceClient::new(
+    let client = DeviceClient::with_timeout(
         listed
             .info
             .app_server_url
@@ -189,6 +346,7 @@ fn build_device(listed: &Listed, tokens: &TokenSet, verbose: bool) -> Result<Dev
         &tokens.term_id,
         verbose,
         cloud,
+        timeout,
     )?;
     Ok(Device::new(
         client,
@@ -202,6 +360,16 @@ fn build_device(listed: &Listed, tokens: &TokenSet, verbose: bool) -> Result<Dev
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_lapsed_tapo_session_names_the_sign_in_once() {
+        let lapsed = tapo_gap(&CliError::Auth("the session lapsed".into()));
+        assert!(lapsed.contains("`tplc auth login`"), "{lapsed}");
+        let told = tapo_gap(&CliError::Auth("run `tplc auth login`".into()));
+        assert_eq!(told.matches("auth login").count(), 1, "{told}");
+        let down = tapo_gap(&CliError::Upstream("down".into()));
+        assert!(!down.contains("auth login"), "{down}");
+    }
 
     fn listed(id: &str, alias: &str, model: &str, child: Option<(&str, &str)>) -> Listed {
         let info = DeviceInfo::from_json(&json!({

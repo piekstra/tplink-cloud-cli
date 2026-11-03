@@ -10,7 +10,8 @@ Claude Code specifics:
   never read the keychain (a fresh test binary prompts on macOS).
 - **Never run `auth login` or any device/room write to "test" it.** They act
   on the owner's real TP-Link account and hardware. Live verification is the
-  owner's call, through the installed binary.
+  owner's call, through the installed binary. The same goes for `tplink_power`
+  and `tplink_light`: `src/mcp/tests.rs` drives them against a stub.
 - **Secrets:** session tokens live in the OS keychain (`piekstra.tplc`), one
   item. Never print them, put them on argv, or write them to a file. The
   password is never stored.

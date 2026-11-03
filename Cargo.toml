@@ -1,8 +1,8 @@
 [package]
 name = "tplink-cloud-cli"
-version = "0.2.3"
+version = "0.3.0"
 edition = "2021"
-rust-version = "1.88"
+rust-version = "1.89"
 description = "TP-Link Kasa and Tapo smart-home devices from the terminal, over the TP-Link cloud API. Keychain-secured, agent-friendly."
 license = "GPL-3.0"
 repository = "https://github.com/piekstra/tplink-cloud-cli"
@@ -24,11 +24,14 @@ clap = { version = "4", features = ["derive", "env"] }
 clap_complete = "4"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
-pk-cli-core = { git = "https://github.com/piekstra/cli-common", tag = "v0.15.1", features = ["reqwest"] }
-pk-cli-secrets = { git = "https://github.com/piekstra/cli-common", tag = "v0.15.1" }
-pk-cli-config = { git = "https://github.com/piekstra/cli-common", tag = "v0.15.1" }
-pk-cli-selfupdate = { git = "https://github.com/piekstra/cli-common", tag = "v0.15.1" }
-pk-cli-auth = { git = "https://github.com/piekstra/cli-common", tag = "v0.15.1" }
+pk-cli-core = { git = "https://github.com/piekstra/cli-common", tag = "v0.23.0", features = ["reqwest"] }
+pk-cli-secrets = { git = "https://github.com/piekstra/cli-common", tag = "v0.23.0" }
+pk-cli-config = { git = "https://github.com/piekstra/cli-common", tag = "v0.23.0" }
+pk-cli-selfupdate = { git = "https://github.com/piekstra/cli-common", tag = "v0.23.0" }
+pk-cli-auth = { git = "https://github.com/piekstra/cli-common", tag = "v0.23.0" }
+# `tplc mcp`: the MCP profile's tools over the same reads and control calls (DESIGN.md §1.9).
+pk-cli-mcp = { git = "https://github.com/piekstra/cli-common", tag = "v0.23.0", features = ["stdio", "http"] }
+schemars = "1"
 
 # The vendor client is async: the cloud round-trips fan out over two clouds
 # and a passthrough per device. A runtime is built per invocation only for
@@ -48,8 +51,11 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 thiserror = "2"
 
 [dev-dependencies]
+# The MCP profile's conformance checks, for the tests only.
+pk-cli-mcp = { git = "https://github.com/piekstra/cli-common", tag = "v0.23.0", features = ["test-util"] }
 assert_cmd = "2"
 predicates = "3"
+tempfile = "3"
 
 [profile.release]
 strip = true

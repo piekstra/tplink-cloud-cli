@@ -1,107 +1,244 @@
-name: Release
+name: release
 
-# Automatic releases. On every push to `main`, if the version in Cargo.toml has
-# no matching `v<version>` git tag yet, this builds per-platform binaries and
-# publishes a release (creating the tag at the merge commit). So cutting a
-# release is just: bump `version` in Cargo.toml and merge — no manual tagging.
-# The Homebrew formula follows through a pull request on piekstra/homebrew-tap
-# (branch `formula/tplc-v<version>`), which needs the piekstra-dev review and
-# a merge before `brew` sees the release.
-# Can also be run by hand from the Actions tab (workflow_dispatch).
+# Cut a release by pushing a tag like `v0.2.0`. Cross-platform artifacts live
+# here rather than in per-push CI, so the expensive macOS runner (about 10x
+# Linux) is billed once per release instead of once per commit. One job per
+# OS: Linux and ONE macOS job (Apple Silicon, which cross-compiles the Intel
+# target; the macOS SDK is universal). No Windows: SECURITY.md says why. Build
+# jobs are independent (fail-fast: false) and each attaches its own tarballs,
+# so a slow or dead macOS queue never blocks the Linux assets. The `.mcpb`
+# (Claude Desktop extension) needs both, so it is packed last, on Linux.
 #
-# Assets are `tplc-<target>.tar.gz` (+ `.sha256`), exactly the name
-# `tplc self-update` looks for on the latest release. aarch64 Linux is
-# intentionally omitted: the secret-service keyring backend links libdbus,
-# awkward to cross-compile.
-
+# Only `publish`, which runs on a tag alone and runs no third-party build
+# code, can write to the repository; building and packing (cargo, npx)
+# happen with a read-only token that checkout does not persist. The Homebrew
+# formula follows through a pull request on piekstra/homebrew-tap (branch
+# `formula/tplc-v<version>`), which needs the piekstra-dev review and a merge
+# before `brew` sees the release.
+#
+# aarch64 Linux is omitted on purpose: the secret-service keyring backend links
+# libdbus, awkward to cross-compile.
+#
+# The versions are checked before anything is built: the tag, Cargo.toml
+# and the .mcpb manifest must agree, or nothing is built or published.
+# `publish` attaches whatever was built to a draft, even when one OS failed, and
+# publishes it only once every expected asset is there. A missing one fails the
+# run and leaves the draft.
+#
+# A pull request that changes how releases are built, or the dependencies
+# and version (Cargo.toml, Cargo.lock), runs every job but `publish` as a
+# dry run: everything is built and packed, nothing is attached to a
+# release. The macOS build runs nowhere else, so a dependency that breaks it
+# shows on its pull request, not on the tag. The version
+# agreement also runs on every pull request, in tests/packaging.rs.
 on:
   push:
-    branches: [main]
+    tags: ["v*"]
   workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/release.yml"
+      - "packaging/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  check:
-    name: check version
+  # The manifest's version must be the crate's, and on a tag the tag's, or
+  # self-update and Claude Desktop would see one version and run another.
+  versions:
+    name: check versions
     runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.v.outputs.version }}
-      release: ${{ steps.v.outputs.release }}
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # need tags to tell whether this version already shipped
-      - id: v
+          persist-credentials: false
+      - name: Tag, Cargo.toml and manifest agree
         run: |
-          version=$(sed -nE 's/^version = "(.*)"/\1/p' Cargo.toml | head -1)
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          if git tag -l "v$version" | grep -q .; then
-            echo "release=false" >> "$GITHUB_OUTPUT"
-            echo "v$version already released — nothing to do." >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "release=true" >> "$GITHUB_OUTPUT"
-            echo "Releasing v$version." >> "$GITHUB_STEP_SUMMARY"
+          set -euo pipefail
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          manifest_version=$(jq -r .version packaging/mcpb/manifest.json)
+          if [ "$manifest_version" != "$version" ]; then
+            echo "::error::packaging/mcpb/manifest.json is $manifest_version but Cargo.toml is $version"
+            exit 1
+          fi
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ] && [ "${GITHUB_REF_NAME#v}" != "$version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match Cargo.toml version $version"
+            exit 1
           fi
 
   build:
-    name: build ${{ matrix.target }}
-    needs: check
-    if: needs.check.outputs.release == 'true'
+    name: build ${{ matrix.name }}
+    needs: versions
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - target: aarch64-apple-darwin
-            os: macos-latest
-          - target: x86_64-apple-darwin
-            os: macos-latest
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
+          - os: macos-15
+            name: apple (aarch64 + x86_64)
+            targets: "aarch64-apple-darwin x86_64-apple-darwin"
+          - os: ubuntu-latest
+            name: linux x86_64
+            targets: "x86_64-unknown-linux-gnu"
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.target }}
-      - name: linux deps
+      - name: Install Linux build deps
         if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+      # Asset names are the contract `tplc self-update` resolves against:
+      # <bin>-<target>.tar.gz plus a sibling .sha256. The bare binaries also
+      # go to bin/<target>/ for the .mcpb job.
+      - name: Build and package each target
         run: |
-          # Ubuntu mirrors fail index downloads now and then; retry before giving up.
-          for i in 1 2 3; do sudo apt-get update && break; sleep 15; done
-          sudo apt-get install -y libdbus-1-dev pkg-config
-      - name: build
-        run: cargo build --release --locked --target ${{ matrix.target }}
-      - name: package
+          set -euo pipefail
+          sha256() { if command -v shasum >/dev/null; then shasum -a 256 "$1"; else sha256sum "$1"; fi; }
+          for t in ${{ matrix.targets }}; do
+            rustup target add "$t"
+            cargo build --release --locked --target "$t"
+            exe=tplc
+            tar -C "target/$t/release" -czf "tplc-$t.tar.gz" "$exe"
+            sha256 "tplc-$t.tar.gz" > "tplc-$t.tar.gz.sha256"
+            mkdir -p "bin/$t"
+            cp "target/$t/release/$exe" "bin/$t/"
+          done
+      # Claude Desktop picks a binary by OS, not by CPU, so the .mcpb carries
+      # one universal macOS binary.
+      - name: Universal macOS binary
+        if: runner.os == 'macOS'
         run: |
-          tar -czf "tplc-${{ matrix.target }}.tar.gz" -C "target/${{ matrix.target }}/release" tplc
-          shasum -a 256 "tplc-${{ matrix.target }}.tar.gz" > "tplc-${{ matrix.target }}.tar.gz.sha256"
+          mkdir -p bin/universal-apple-darwin
+          lipo -create -output bin/universal-apple-darwin/tplc \
+            bin/aarch64-apple-darwin/tplc bin/x86_64-apple-darwin/tplc
+          lipo -info bin/universal-apple-darwin/tplc
+      # A binary that fails at startup is not published. The x86_64 macOS slice cannot
+      # run on this arm64 runner. None of this reads a credential.
+      - name: Run what this runner can run
+        run: |
+          set -euo pipefail
+          case "$RUNNER_OS" in
+            macOS) bins=(bin/aarch64-apple-darwin/tplc bin/universal-apple-darwin/tplc) ;;
+            *) bins=(bin/x86_64-unknown-linux-gnu/tplc) ;;
+          esac
+          for b in "${bins[@]}"; do
+            "$b" --version
+            "$b" mcp --list-tools > /dev/null
+          done
       - uses: actions/upload-artifact@v4
         with:
-          name: tplc-${{ matrix.target }}
-          path: tplc-${{ matrix.target }}.tar.gz*
+          name: bin-${{ runner.os }}
+          path: bin/
+          retention-days: 3
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ runner.os }}
+          path: |
+            tplc-*.tar.gz
+            tplc-*.tar.gz.sha256
+          retention-days: 3
+          if-no-files-found: error
 
-  release:
-    name: publish release
-    needs: [check, build]
-    if: needs.check.outputs.release == 'true'
+  mcpb:
+    name: pack the Claude Desktop extension
+    needs: build
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bin-*
+          path: bin
+          merge-multiple: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # The `versions` job has already held the manifest to Cargo.toml and
+      # the tag.
+      - name: Assemble, validate and pack
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          stage="$RUNNER_TEMP/tplc"
+          mkdir -p "$stage/server/linux"
+          cp packaging/mcpb/manifest.json LICENSE "$stage/"
+          cp bin/universal-apple-darwin/tplc "$stage/server/tplc"
+          cp bin/x86_64-unknown-linux-gnu/tplc "$stage/server/linux/tplc"
+          # Artifacts drop the executable bit; the .mcpb keeps what it is given.
+          chmod +x "$stage/server/tplc" "$stage/server/linux/tplc"
+          npx -y @anthropic-ai/mcpb@2.1.2 validate "$stage/manifest.json"
+          npx -y @anthropic-ai/mcpb@2.1.2 pack "$stage" "tplc-$version.mcpb"
+          sha256sum "tplc-$version.mcpb" > "tplc-$version.mcpb.sha256"
+          unzip -Z "tplc-$version.mcpb"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-mcpb
+          path: tplc-*.mcpb*
+          retention-days: 7
+          if-no-files-found: error
+
+  # Attaches whatever was built to a draft, even when one OS failed, so a dead
+  # macOS queue still leaves the Linux tarball there. Publishes the draft only when
+  # nothing expected is missing, and otherwise fails. Never runs when the versions
+  # disagree.
+  publish:
+    name: publish the release
+    needs: [versions, build, mcpb]
+    if: ${{ !cancelled() && needs.versions.result == 'success' && startsWith(github.ref, 'refs/tags/') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/download-artifact@v4
         with:
+          pattern: dist-*
           path: dist
           merge-multiple: true
-      - name: publish
-        uses: softprops/action-gh-release@v2
+      - run: ls -l dist
+      # A draft first, because `self-update` reads the latest published release: a
+      # build that failed leaves the assets it did get on a draft, and nobody on the
+      # platform it failed for is sent to a release that lacks theirs.
+      - uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ needs.check.outputs.version }}
-          files: dist/*
+          draft: true
+          files: |
+            dist/tplc-*.tar.gz
+            dist/tplc-*.tar.gz.sha256
+            dist/tplc-*.mcpb
+            dist/tplc-*.mcpb.sha256
           generate_release_notes: true
-          fail_on_unmatched_files: true
+      - name: Every expected asset was attached
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          missing=0
+          for t in aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-gnu; do
+            for f in "tplc-$t.tar.gz" "tplc-$t.tar.gz.sha256"; do
+              [ -f "dist/$f" ] || { echo "::error::missing $f"; missing=1; }
+            done
+          done
+          for f in "tplc-$version.mcpb" "tplc-$version.mcpb.sha256"; do
+            [ -f "dist/$f" ] || { echo "::error::missing $f"; missing=1; }
+          done
+          exit "$missing"
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --latest
 
   # Keep `brew install piekstra/tap/tplc` working: point the formula at the
   # new tarballs. The tap's main takes changes only through a reviewed pull
@@ -110,19 +247,20 @@ jobs:
   # configured. TAP_TOKEN needs contents and pull-request write on the tap.
   homebrew:
     name: update homebrew tap
-    needs: [check, release]
-    if: needs.check.outputs.release == 'true'
+    needs: [publish]
+    if: ${{ needs.publish.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
         with:
+          pattern: dist-*
           path: dist
           merge-multiple: true
       - name: update formula
         env:
           GH_TOKEN: ${{ secrets.TAP_TOKEN }}
-          VERSION: ${{ needs.check.outputs.version }}
         run: |
+          VERSION="${GITHUB_REF_NAME#v}"
           if [ -z "$GH_TOKEN" ]; then
             echo "TAP_TOKEN secret not set, skipping Homebrew update"
             exit 0
