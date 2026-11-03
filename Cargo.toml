@@ -2,7 +2,7 @@
 name = "tplink-cloud-cli"
 version = "0.2.3"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.88"
 description = "TP-Link Kasa and Tapo smart-home devices from the terminal, over the TP-Link cloud API. Keychain-secured, agent-friendly."
 license = "GPL-3.0"
 repository = "https://github.com/piekstra/tplink-cloud-cli"

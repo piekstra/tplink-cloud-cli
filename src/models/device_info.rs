@@ -75,7 +75,7 @@ impl DeviceInfo {
 /// the clouds pass some through as-is, so a value that is valid base64 of
 /// clean UTF-8 text is taken as encoded; anything else is the name.
 pub fn decode_encoded_name(raw: &str) -> String {
-    if raw.len() % 4 == 0
+    if raw.len().is_multiple_of(4)
         && raw
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/' || b == b'=')
