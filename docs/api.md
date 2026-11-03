@@ -15,6 +15,11 @@ There are **three** clouds behind one TP-Link account:
 | Kasa IoT cloud | `https://api.tplinkra.com` | Kasa token in query + body | device groups (the Kasa app's rooms) |
 | Tapo NBU app-server | `{region}-app-server.iot.i.tplinknbu.com` (resolved) | `Authorization: ut\|<tapo token>` | homes, rooms, device→room membership |
 
+Three of these hosts arrive in answers: `appServerUrl`, `serviceUrls`, and each device's own
+`appServerUrl`. `ensure_provider_url` in `src/api/client.rs` allows `https` on `tplinkcloud.com`,
+`tplinknbu.com` and `tplinkra.com`, the domains in this table. A region TP-Link serves from another domain
+would fail with exit 5 until that domain is added here and there.
+
 ## The v2 account cloud
 
 ### Signing (`src/api/signing.rs`)

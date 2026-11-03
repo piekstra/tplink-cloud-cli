@@ -67,6 +67,8 @@ async fn iot_call(
     }
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
+        // The token is in this request's query and its body.
+        .redirect(pk_cli_core::transport::same_host_redirects())
         .build()?;
     let resp = client
         .post(&url)

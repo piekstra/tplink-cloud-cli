@@ -10,7 +10,7 @@ apps: the signed v2 account cloud (login, device list, device passthrough),
 the Kasa IoT cloud (device groups), and the Tapo NBU app-server (homes and
 rooms). A thin, TP-Link-specific layer over the shared
 [`cli-common`](https://github.com/piekstra/cli-common) `pk-cli-*` crates
-(**v0.23.0**: output, errors, confirm gate, reference ladder, keychain items,
+(**v0.25.0**: output, errors, confirm gate, reference ladder, keychain items,
 config, self-update, auth shapes, refresh lock, mcp). This repo owns only the vendor clients,
 the device models, and the commands.
 

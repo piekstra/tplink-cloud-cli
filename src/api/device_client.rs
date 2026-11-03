@@ -1,16 +1,14 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use reqwest::Certificate;
 use serde_json::json;
 
+use super::client::{client_builder, ensure_provider_url};
 use super::cloud_type::CloudType;
 use super::errors::*;
 use super::response::ApiResponse;
 use super::signing::get_signing_headers;
 use crate::error::AppError;
-
-const CA_CERT_PEM: &[u8] = include_bytes!("../../certs/tplink-ca-chain.pem");
 
 /// How long a command in a terminal waits for the cloud to reach a device (docs/api.md).
 pub const PASSTHROUGH_TIMEOUT: Duration = Duration::from_secs(600);
@@ -50,9 +48,8 @@ impl DeviceClient {
         cloud_type: CloudType,
         timeout: Duration,
     ) -> Result<Self, AppError> {
-        let cert = Certificate::from_pem(CA_CERT_PEM)?;
-        let client = reqwest::Client::builder()
-            .add_root_certificate(cert)
+        ensure_provider_url(host)?;
+        let client = client_builder()?
             .user_agent("Dalvik/2.1.0 (Linux; U; Android 14; Pixel Build/UP1A)")
             .timeout(timeout)
             .build()?;

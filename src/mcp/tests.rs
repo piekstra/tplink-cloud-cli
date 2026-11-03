@@ -9,7 +9,8 @@ use std::net::TcpListener;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
-use pk_cli_mcp::conformance::{assert_conforms, assert_fits, call, definitions_size};
+use pk_cli_mcp::conformance::{assert_conforms, assert_fits, call, definitions_size, ManualClock};
+use pk_cli_mcp::CALL_LIMIT;
 use serde::de::DeserializeOwned;
 use serde_json::json;
 
@@ -117,12 +118,12 @@ struct Fake {
     energy_asked: RefCell<Vec<Period>>,
     sent: RefCell<Vec<(String, Change)>>,
     paused: Cell<usize>,
+    /// The command itself used up the time left for reading it back.
     out_of_time: Cell<bool>,
+    clock: ManualClock,
     open_takes: Cell<Duration>,
-    send_deadline: Cell<Option<Duration>>,
     /// How far the wall clock moves during `open`, as a Mac asleep through a prompt.
     slept_in_open: Cell<Duration>,
-    wall_moved: Cell<Duration>,
 }
 
 type Tools = TplinkTools<Rc<Fake>>;
@@ -183,6 +184,9 @@ impl Platform for Rc<Fake> {
         self.sent
             .borrow_mut()
             .push((device.name().to_string(), change));
+        if self.out_of_time.get() {
+            self.clock.advance(READ_BACK_DEADLINE);
+        }
         if self.control_answer_lost.get() {
             return Ok(Sent::NoAnswer("the request timed out".into()));
         }
@@ -195,8 +199,8 @@ impl Source for Rc<Fake> {
 
     fn open(&self) -> Result<Rc<Fake>, CliError> {
         self.opened.set(self.opened.get() + 1);
-        std::thread::sleep(self.open_takes.get());
-        self.wall_moved.set(self.slept_in_open.get());
+        self.clock.advance(self.open_takes.get());
+        self.clock.sleep(self.slept_in_open.get());
         if let Some(e) = self.open_fails.borrow_mut().take() {
             return Err(e);
         }
@@ -207,20 +211,8 @@ impl Source for Rc<Fake> {
         self.paused.set(self.paused.get() + 1);
     }
 
-    fn send_deadline(&self) -> Duration {
-        self.send_deadline.get().unwrap_or(SEND_DEADLINE)
-    }
-
-    fn wall_clock(&self) -> SystemTime {
-        SystemTime::now() + self.wall_moved.get()
-    }
-
-    fn read_back_deadline(&self) -> Duration {
-        if self.out_of_time.get() {
-            Duration::ZERO
-        } else {
-            READ_BACK_DEADLINE
-        }
+    fn clock(&self) -> &dyn Clock {
+        &self.clock
     }
 }
 
@@ -956,11 +948,10 @@ fn a_read_back_past_the_deadline_is_skipped_and_said() {
 #[test]
 fn a_call_that_reaches_the_command_past_the_deadline_sends_nothing() {
     let (tools, fake) = home();
-    fake.open_takes.set(Duration::from_millis(20));
-    fake.send_deadline.set(Some(Duration::from_millis(10)));
+    fake.open_takes.set(SEND_DEADLINE);
     let text = failed(&tools, POWER_TOOL, json!({"device": PLUG, "power": "off"}));
-    assert!(text.starts_with("upstream:"), "{text}");
-    assert!(text.contains("nothing was sent"), "{text}");
+    assert!(text.starts_with("other:"), "{text}");
+    assert!(text.contains("was not sent"), "{text}");
     assert_eq!(fake.sent(), []);
     assert_eq!(fake.state_reads.get(), 0);
 
@@ -969,8 +960,17 @@ fn a_call_that_reaches_the_command_past_the_deadline_sends_nothing() {
         LIGHT_TOOL,
         json!({"device": LIGHT, "brightness": 40}),
     );
-    assert!(text.contains("nothing was sent"), "{text}");
+    assert!(text.contains("was not sent"), "{text}");
     assert_eq!(fake.sent(), []);
+}
+
+#[test]
+fn a_call_that_reaches_the_command_just_inside_the_deadline_sends_it() {
+    let (tools, fake) = home();
+    fake.open_takes
+        .set(SEND_DEADLINE - Duration::from_millis(1));
+    call(&tools, POWER_TOOL, json!({"device": PLUG, "power": "off"}));
+    assert_eq!(fake.sent().len(), 1);
 }
 
 /// `Instant` stands still while a Mac sleeps, so only the wall clock sees this night pass.
@@ -979,22 +979,9 @@ fn a_mac_that_slept_through_the_prompt_sends_nothing() {
     let (tools, fake) = home();
     fake.slept_in_open.set(Duration::from_secs(8 * 60 * 60));
     let text = failed(&tools, POWER_TOOL, json!({"device": PLUG, "power": "off"}));
-    assert!(text.contains("nothing was sent"), "{text}");
+    assert!(text.contains("was not sent"), "{text}");
     assert_eq!(fake.sent(), []);
 }
-
-#[test]
-fn a_wall_clock_that_moved_back_leaves_the_monotonic_one() {
-    let started = CallStart {
-        monotonic: Instant::now(),
-        wall: SystemTime::now(),
-    };
-    let hour = Duration::from_secs(60 * 60);
-    assert!(started.elapsed(started.wall - hour) < hour);
-    assert!(started.elapsed(started.wall + hour) >= hour);
-}
-
-const PATIENCE_LIMIT: u64 = 120;
 
 /// The sum the comment on `PATIENCE` makes, held to the limit it names.
 #[test]
@@ -1005,7 +992,7 @@ fn a_write_can_answer_inside_the_http_limit() {
     let last_read_back_starts = READ_BACK_DEADLINE.as_secs();
     assert!(listing <= SEND_DEADLINE.as_secs(), "{listing}");
     assert!(SEND_DEADLINE.as_secs() + command <= last_read_back_starts);
-    assert!(last_read_back_starts + per_request + 2 < PATIENCE_LIMIT);
+    assert!(last_read_back_starts + per_request + 2 < CALL_LIMIT.as_secs());
 }
 
 // ---- a list with a part missing ---------------------------------------------------------

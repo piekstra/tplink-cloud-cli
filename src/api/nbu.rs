@@ -11,10 +11,11 @@
 
 use crate::models::device_info::decode_encoded_name;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, USER_AGENT};
-use reqwest::{Certificate, Method};
+use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use super::client::{client_builder, ensure_provider_url};
 use crate::error::AppError;
 
 /// The service id whose URL `getAppServiceUrl` resolves to this cloud's host.
@@ -25,8 +26,6 @@ const APP_NAME: &str = "TP-Link_Tapo_Android";
 const PAGE_SIZE: u32 = 20;
 /// Pagination safety stop (a home has tens of devices, not thousands).
 const MAX_PAGES: u32 = 50;
-
-const CA_CERT_PEM: &[u8] = include_bytes!("../../certs/tplink-ca-chain.pem");
 
 /// A home, with its rooms embedded (`GET /v1/families`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -129,7 +128,7 @@ pub struct NbuClient {
 
 impl NbuClient {
     pub fn new(base: &str, token: &str, term_id: &str, verbose: bool) -> Result<Self, AppError> {
-        let cert = Certificate::from_pem(CA_CERT_PEM)?;
+        ensure_provider_url(base)?;
         let mut headers = HeaderMap::new();
         let put = |headers: &mut HeaderMap, k: &'static str, v: String| {
             if let Ok(hv) = HeaderValue::from_str(&v) {
@@ -148,8 +147,7 @@ impl NbuClient {
             USER_AGENT,
             HeaderValue::from_static("TP-Link_Tapo_Android/3.20.753(Pixel/;Android 14)"),
         );
-        let client = reqwest::Client::builder()
-            .add_root_certificate(cert)
+        let client = client_builder()?
             .default_headers(headers)
             .timeout(std::time::Duration::from_secs(30))
             .build()?;
@@ -333,6 +331,11 @@ impl NbuClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_service_url_on_another_host_gets_no_token() {
+        assert!(NbuClient::new("https://elsewhere.example", "dummy", "term", false).is_err());
+    }
 
     #[test]
     fn room_ids_are_eight_alphanumerics() {
