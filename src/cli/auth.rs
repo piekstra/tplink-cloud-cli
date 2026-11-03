@@ -372,12 +372,12 @@ pub fn logout(ctx: &Ctx<'_>, args: &LogoutArgs) -> Result<i32, CliError> {
     }
     if !ctx.quiet {
         if args.forget {
-            eprintln!("logged out; connector token removed; config cleared");
-        } else {
             eprintln!(
-                "logged out. The connector token of `tplc mcp --http` is still stored; use \
-                 `tplc auth logout --forget` to remove it too."
+                "logged out; any connector token removed from the keychain (a running `tplc mcp \
+                 --http` keeps its own until it stops); config cleared"
             );
+        } else {
+            eprintln!("logged out");
         }
     }
     Ok(0)
