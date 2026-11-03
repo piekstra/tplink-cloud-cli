@@ -1,16 +1,14 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use reqwest::Certificate;
 use serde_json::json;
 
+use super::client::{client_builder, ensure_device_url};
 use super::cloud_type::CloudType;
 use super::errors::*;
 use super::response::ApiResponse;
 use super::signing::get_signing_headers;
 use crate::error::AppError;
-
-const CA_CERT_PEM: &[u8] = include_bytes!("../../certs/tplink-ca-chain.pem");
 
 /// How long a command in a terminal waits for the cloud to reach a device (docs/api.md).
 pub const PASSTHROUGH_TIMEOUT: Duration = Duration::from_secs(600);
@@ -50,9 +48,8 @@ impl DeviceClient {
         cloud_type: CloudType,
         timeout: Duration,
     ) -> Result<Self, AppError> {
-        let cert = Certificate::from_pem(CA_CERT_PEM)?;
-        let client = reqwest::Client::builder()
-            .add_root_certificate(cert)
+        ensure_device_url(host)?;
+        let client = client_builder()?
             .user_agent("Dalvik/2.1.0 (Linux; U; Android 14; Pixel Build/UP1A)")
             .timeout(timeout)
             .build()?;
@@ -180,5 +177,35 @@ impl DeviceClient {
         }
 
         Ok(None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::client::tests::{redirect_to_another_host, runtime};
+
+    fn client_at(host: &str) -> Result<DeviceClient, AppError> {
+        DeviceClient::new(host, "dummy", "term", false, CloudType::Kasa)
+    }
+
+    #[test]
+    fn a_device_url_on_another_host_gets_no_token() {
+        let Err(err) = client_at("https://elsewhere.example") else {
+            panic!("the client was built");
+        };
+        let text = err.to_string();
+        assert!(text.contains("no credential"), "{text}");
+        assert!(!text.contains("auth login"), "{text}");
+        assert!(!text.contains("elsewhere"), "{text}");
+    }
+
+    #[test]
+    fn the_token_does_not_follow_a_redirect_to_another_host() {
+        let (first, arrived) = redirect_to_another_host();
+        let device = client_at(&first).unwrap();
+        let sent = runtime().block_on(async { device.client.post(&first).send().await });
+        assert!(sent.is_err());
+        assert!(arrived.lock().unwrap().is_empty());
     }
 }

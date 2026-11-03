@@ -75,9 +75,19 @@ pub enum AppError {
 
 /// A reqwest error prints the URL it was for, and every request to these clouds carries the
 /// session token in its query. This is the one way a reqwest error becomes an `AppError`, so
-/// no message, `--json` error or tool result can repeat the token.
+/// no message, `--json` error or tool result can repeat the token. A refused redirect keeps its
+/// policy's reason, which holds no URL: TP-Link answered with it and took no command, so it is a
+/// failure and not an unknown outcome.
 impl From<reqwest::Error> for AppError {
     fn from(e: reqwest::Error) -> Self {
+        if e.is_redirect() {
+            let reason = std::error::Error::source(&e)
+                .map_or_else(|| "refused".to_string(), ToString::to_string);
+            return AppError::Api {
+                message: format!("TP-Link answered with a redirect: {reason}"),
+                error_code: None,
+            };
+        }
         AppError::Http(e.without_url())
     }
 }

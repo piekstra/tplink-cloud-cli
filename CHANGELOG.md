@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.3.1 — 2026-11-03
+
+- **Security fix:** a password or token now goes only to `https` on a TP-Link domain: `tplinkcloud.com`,
+  `tplinknbu.com` or `tplinkra.com`. TP-Link's answers name the hosts that receive them (the account
+  lookup, the service lookup and each device's app server), and a session stores those hosts. An
+  address elsewhere is an upstream failure, exit 5, and nothing is sent to it. One strip's own address
+  costs only that strip's outlets, and the list says which.
+- **Security fix:** no client follows a redirect off its host. The token is in the query and the password
+  or refresh token in the body, which a 307 or 308 re-sends, and reqwest strips neither. A redirect to
+  another host is now an error that says so, and a write refused this way is reported as a failure, not
+  as an unknown outcome.
+- A write's deadlines are now cli-common's `SendDeadline`, with the same 75 s to send and 90 s to start
+  a read-back, on both clocks. Its refusal is an `other` error in place of `upstream`, since TP-Link did
+  not fail, and it tells the caller to check the current state before calling again.
+- cli-common v0.25.0, up from v0.23.0.
+
 ## 0.3.0 — 2026-11-03
 
 - `tplc mcp`: tools for Claude. `tplink_devices`, `tplink_device_state` and `tplink_energy` read;

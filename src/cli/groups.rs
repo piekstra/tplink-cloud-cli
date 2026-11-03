@@ -65,9 +65,7 @@ async fn iot_call(
     if verbose {
         eprintln!("POST {IOT_HOST}/v1/device-groups/{method}");
     }
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()?;
+    let client = iot_client()?;
     let resp = client
         .post(&url)
         .header("Content-Type", "application/json")
@@ -200,9 +198,27 @@ pub async fn handle(ctx: &Ctx<'_>, cmd: &GroupsCommand) -> Result<(), CliError> 
     }
 }
 
+/// The token is in this client's query and its body, so a redirect stays on its host.
+fn iot_client() -> Result<reqwest::Client, AppError> {
+    Ok(reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .redirect(pk_cli_core::transport::same_host_redirects())
+        .build()?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_token_does_not_follow_a_redirect_to_another_host() {
+        use crate::api::client::tests::{redirect_to_another_host, runtime};
+        let (first, arrived) = redirect_to_another_host();
+        let client = iot_client().unwrap();
+        let sent = runtime().block_on(async { client.post(&first).send().await });
+        assert!(sent.is_err());
+        assert!(arrived.lock().unwrap().is_empty());
+    }
 
     #[test]
     fn device_room_rows_omit_an_unknown_name() {

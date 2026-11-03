@@ -16,6 +16,10 @@ account's security settings can revoke sessions server-side.
 tokens or signatures. The app-level signing keys in `src/api/cloud_type.rs`
 identify the apps to the cloud, not the user; they are public.
 
+TP-Link's answers name the hosts its tokens and the password go to. `tplc` sends them only to `https` on
+`tplinkcloud.com`, `tplinknbu.com` or `tplinkra.com`, refuses any other address as an upstream failure,
+and follows no redirect off a host.
+
 ## The MCP server
 
 `tplc mcp` serves five tools to an MCP client (Claude Code, Claude Desktop) over stdio; the server
