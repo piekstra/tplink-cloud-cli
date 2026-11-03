@@ -323,7 +323,7 @@ impl<S> TplinkTools<S> {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct DevicesArgs {
-    /// A filter, not a target: only names containing this text.
+    /// Filter: only names containing this text.
     #[serde(default)]
     pub name: Option<String>,
     #[serde(flatten)]
@@ -338,9 +338,9 @@ struct DevicesFilter<'a> {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct StateArgs {
-    /// Its name, a unique part of it, or its id.
+    /// Name, unique part of it, or id.
     pub device: String,
-    /// `concise` (default), or `detailed`: adds device_id, model and cloud.
+    /// `detailed` adds device_id, model and cloud.
     #[serde(default)]
     pub response_format: Option<ResponseFormat>,
 }
@@ -348,7 +348,7 @@ pub struct StateArgs {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct EnergyArgs {
-    /// Its name, a unique part of it, or its id.
+    /// Name, unique part of it, or id.
     pub device: String,
     /// A year for its months, or with month its days; omit for now.
     #[serde(default)]
@@ -370,7 +370,7 @@ pub enum OnOff {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PowerArgs {
-    /// The one device or outlet: its full name or id, never part of a name.
+    /// One device or outlet: full name or id, never part of a name.
     pub device: String,
     /// `on` or `off`.
     pub power: OnOff,
@@ -382,7 +382,7 @@ pub struct PowerArgs {
 #[serde(deny_unknown_fields)]
 #[schemars(extend("minProperties" = 2, "maxProperties" = 3))]
 pub struct LightArgs {
-    /// The one light: its full name or id, never part of a name.
+    /// One light: full name or id, never part of a name.
     pub device: String,
     /// Brightness, 1 to 100.
     #[serde(default)]
@@ -537,7 +537,7 @@ impl<S: Source> Toolset for TplinkTools<S> {
                 "Lists the Kasa and Tapo devices on the user's account, each outlet of a strip \
                  as its own row, changing nothing. Use it to find a device's exact name and what \
                  the tools can change on it. Returns items with name, kind, online, strip, \
-                 controls (empty when a tool cannot change it) and energy, plus returned, \
+                 controls (empty when none) and energy, plus returned, \
                  next_cursor and note.",
             )
             .input::<DevicesArgs>()
@@ -545,16 +545,16 @@ impl<S: Source> Toolset for TplinkTools<S> {
             ToolDef::read(
                 STATE_TOOL,
                 "Read a TP-Link device's state",
-                "Reads one device's current state, changing nothing. Use it to answer whether a \
+                "Reads one device's state, changing nothing. Use it to answer whether a \
                  light or plug is on. Returns name, online, power, brightness, hue, saturation, \
-                 color_temp_k and a strip's outlets; a field the device did not report is absent.",
+                 color_temp_k, a strip's outlets and note; a field not reported is absent.",
             )
             .input::<StateArgs>()
             .output::<DeviceState>(),
             ToolDef::read(
                 ENERGY_TOOL,
                 "Read a TP-Link plug's energy use",
-                "Reads a plug's or outlet's energy meter, changing nothing. Use it for what \
+                "Reads a plug's energy meter, changing nothing. Use it for what \
                  something draws now or used over a month or year. Returns device, and power_w, \
                  voltage_v, current_a and total_kwh for now, or periods with year, month, day \
                  and energy_kwh.",
@@ -563,11 +563,11 @@ impl<S: Source> Toolset for TplinkTools<S> {
             .output::<EnergyResult>(),
             ToolDef::write(
                 POWER_TOOL,
-                "Turn a TP-Link light, plug or outlet on or off",
+                "Turn one TP-Link device on or off",
                 "Turns one light, plug, wall switch or outlet on or off, only when the user asked \
                  for this now. It takes one device by its full name or id, and refuses a whole \
                  strip and any model this CLI does not know. Returns device (the state read \
-                 back), requested, confirmed (true when the read-back showed it) and note.",
+                 back), requested, confirmed (the read-back showed it) and note.",
                 false,
             )
             .idempotent(true)
@@ -579,7 +579,7 @@ impl<S: Source> Toolset for TplinkTools<S> {
                 "Sets one light's brightness, color (hue and saturation) or color temperature, \
                  only when the user asked for this now: pass one, and it also turns the light on. \
                  It takes one device by its full name or id. Returns device (the state read \
-                 back), requested, confirmed (true when the read-back showed it) and note.",
+                 back), requested, confirmed (the read-back showed it) and note.",
                 false,
             )
             .idempotent(true)
