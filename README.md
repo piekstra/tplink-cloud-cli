@@ -263,8 +263,8 @@ $ claude mcp add tplink -- tplc mcp
 **Claude Desktop.** Download `tplc-<version>.mcpb` from the
 [latest release](https://github.com/piekstra/tplink-cloud-cli/releases/latest) and open it. It has no
 settings: install the CLI and sign in first, and the bundled `tplc` reads the same keychain session.
-A new version of the extension is a new program to the keychain and can ask again. macOS and Linux
-only; [`SECURITY.md`](SECURITY.md) says why there is no Windows build.
+A new version of the extension is a new program to the keychain and can ask again. It runs on macOS,
+Linux and Windows.
 
 Any other MCP client that launches a local server can run `tplc mcp`.
 

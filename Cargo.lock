@@ -1483,8 +1483,8 @@ dependencies = [
 
 [[package]]
 name = "pk-cli-auth"
-version = "0.25.0"
-source = "git+https://github.com/piekstra/cli-common?tag=v0.25.0#bdef8c4248dfa6d45bf934f2f31b22dc9f77c255"
+version = "0.29.0"
+source = "git+https://github.com/piekstra/cli-common?tag=v0.29.0#0aa4887ae7313ae258a3283986b82d1bd4518a7b"
 dependencies = [
  "clap",
  "pk-cli-core",
@@ -1495,8 +1495,8 @@ dependencies = [
 
 [[package]]
 name = "pk-cli-config"
-version = "0.25.0"
-source = "git+https://github.com/piekstra/cli-common?tag=v0.25.0#bdef8c4248dfa6d45bf934f2f31b22dc9f77c255"
+version = "0.29.0"
+source = "git+https://github.com/piekstra/cli-common?tag=v0.29.0#0aa4887ae7313ae258a3283986b82d1bd4518a7b"
 dependencies = [
  "pk-cli-core",
  "serde",
@@ -1505,8 +1505,8 @@ dependencies = [
 
 [[package]]
 name = "pk-cli-core"
-version = "0.25.0"
-source = "git+https://github.com/piekstra/cli-common?tag=v0.25.0#bdef8c4248dfa6d45bf934f2f31b22dc9f77c255"
+version = "0.29.0"
+source = "git+https://github.com/piekstra/cli-common?tag=v0.29.0#0aa4887ae7313ae258a3283986b82d1bd4518a7b"
 dependencies = [
  "clap",
  "libc",
@@ -1517,8 +1517,8 @@ dependencies = [
 
 [[package]]
 name = "pk-cli-mcp"
-version = "0.25.0"
-source = "git+https://github.com/piekstra/cli-common?tag=v0.25.0#bdef8c4248dfa6d45bf934f2f31b22dc9f77c255"
+version = "0.29.0"
+source = "git+https://github.com/piekstra/cli-common?tag=v0.29.0#0aa4887ae7313ae258a3283986b82d1bd4518a7b"
 dependencies = [
  "bytes",
  "clap",
@@ -1538,8 +1538,8 @@ dependencies = [
 
 [[package]]
 name = "pk-cli-secrets"
-version = "0.25.0"
-source = "git+https://github.com/piekstra/cli-common?tag=v0.25.0#bdef8c4248dfa6d45bf934f2f31b22dc9f77c255"
+version = "0.29.0"
+source = "git+https://github.com/piekstra/cli-common?tag=v0.29.0#0aa4887ae7313ae258a3283986b82d1bd4518a7b"
 dependencies = [
  "clap",
  "keyring",
@@ -1552,8 +1552,8 @@ dependencies = [
 
 [[package]]
 name = "pk-cli-selfupdate"
-version = "0.25.0"
-source = "git+https://github.com/piekstra/cli-common?tag=v0.25.0#bdef8c4248dfa6d45bf934f2f31b22dc9f77c255"
+version = "0.29.0"
+source = "git+https://github.com/piekstra/cli-common?tag=v0.29.0#0aa4887ae7313ae258a3283986b82d1bd4518a7b"
 dependencies = [
  "clap",
  "flate2",
@@ -2587,7 +2587,7 @@ checksum = "8df9b6e13f2d32c91b9bd719c00d1958837bc7dec474d94952798cc8e69eeec3"
 
 [[package]]
 name = "tplink-cloud-cli"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "assert_cmd",
  "base64 0.22.1",

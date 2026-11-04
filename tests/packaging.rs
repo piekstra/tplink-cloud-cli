@@ -65,14 +65,17 @@ fn the_manifest_lists_exactly_the_served_tools() {
     assert_eq!(listed, served);
 }
 
-/// SECURITY.md says why there is no Windows build.
 #[test]
-fn the_extension_does_not_claim_windows() {
+fn the_extension_runs_on_each_platform_the_release_builds() {
     let m = manifest();
-    assert_eq!(m["compatibility"]["platforms"], json!(["darwin", "linux"]));
-    assert!(m["server"]["mcp_config"]["platform_overrides"]
-        .get("win32")
-        .is_none());
+    assert_eq!(
+        m["compatibility"]["platforms"],
+        json!(["darwin", "win32", "linux"])
+    );
+    assert_eq!(
+        m["server"]["mcp_config"]["platform_overrides"]["win32"]["command"],
+        "${__dirname}/server/tplc.exe"
+    );
 }
 
 /// A login can ask for an emailed code, which a settings form cannot do, so the extension asks
@@ -85,6 +88,7 @@ fn every_platform_runs_mcp_with_no_credential_in_its_config() {
     let config = &m["server"]["mcp_config"];
     let mut configs = vec![config.clone()];
     configs.push(config["platform_overrides"]["linux"].clone());
+    configs.push(config["platform_overrides"]["win32"].clone());
     for c in &configs {
         assert_eq!(c["args"], json!(["mcp"]), "{c}");
         assert!(
