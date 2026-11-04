@@ -81,6 +81,7 @@ plain `auth logout` removes the session and keeps the token. To revoke the conne
 serving, run `tplc mcp --new-token --overwrite` and restart the server (`launchctl kickstart -k
 gui/$(id -u)/com.piekstra.tplc-mcp-http`); the old token works until the restart. To stop serving, run
 `launchctl bootout gui/$(id -u)/com.piekstra.tplc-mcp-http` and stop the tunnel.
+A token supplied through `$TPLC_MCP_TOKEN` is not stored, so the logout cannot reach it: to end it, unset the variable and stop the server.
 
 To report a vulnerability, open a private security advisory on the GitHub
 repository rather than a public issue.
