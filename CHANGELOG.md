@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.4.0 — 2026-11-04
+## 0.4.0 — 2026-11-04
 
 - Windows: releases attach `tplc-x86_64-pc-windows-msvc.tar.gz`, and the `.mcpb` runs there. A session too long for one Windows credential is split and read back as one.
 - `auth logout --forget` says what it does not end, naming `$TPLC_MCP_TOKEN`, and claims a removal only when there was an item.
