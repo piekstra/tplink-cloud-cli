@@ -55,8 +55,9 @@ A write by name is refused while a cloud's list or an answering strip's outlets 
 the name could mean a device in the missing part. A strip the cloud lists as offline does not count: a
 result names it in `note`, and a name shared with an outlet on it reaches the device that is online.
 
-The extension and the release have no Windows build, because the session is unmeasured against
-Windows's 2,560-byte credential limit, and a session too long for it would fail at the first sign-in.
+A session too long for one credential on Windows is held in pieces: Windows limits an item to 2,560
+bytes (1,280 UTF-16 units), and `pk-cli-secrets` splits a longer value and reads it back as one. A logout
+after a downgrade is repeated from a current build, since an older build's logout leaves the parts.
 
 `tplc mcp --http --port <PORT>` serves over HTTP for the user's own Cloudflare Worker, which reaches it
 through the user's own Cloudflare Tunnel (cli-common's `connector/`). It binds 127.0.0.1 only, with no

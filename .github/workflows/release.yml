@@ -2,13 +2,13 @@ name: release
 
 # Cut a release by pushing a tag like `v0.2.0`. Cross-platform artifacts live
 # here rather than in per-push CI, so the expensive macOS runner (about 10x
-# Linux) is billed once per release instead of once per commit. One job per
-# OS: Linux and ONE macOS job (Apple Silicon, which cross-compiles the Intel
-# target; the macOS SDK is universal). No Windows: SECURITY.md says why. Build
-# jobs are independent (fail-fast: false), so a slow or dead macOS queue never
-# stops the Linux build; only `publish` attaches, and re-running the failed jobs
-# finishes the draft it leaves. The `.mcpb` (Claude Desktop extension) needs both,
-# so it is packed last, on Linux.
+# Linux) and the Windows runner (about 2x) are billed once per release
+# instead of once per commit. One job per OS: Linux, Windows, and ONE macOS
+# job (Apple Silicon, which cross-compiles the Intel target; the macOS SDK is
+# universal). Build jobs are independent (fail-fast: false), so a slow or dead
+# macOS queue never stops the Linux and Windows builds; only `publish` attaches,
+# and re-running the failed jobs finishes the draft it leaves. The `.mcpb` (Claude
+# Desktop extension) needs all three, so it is packed last, on Linux.
 #
 # Only `publish`, which runs on a tag alone and runs no third-party build
 # code, can write to the repository; building and packing (cargo, npx)
@@ -29,8 +29,8 @@ name: release
 # A pull request that changes how releases are built, or the dependencies
 # and version (Cargo.toml, Cargo.lock), runs every job but `publish` as a
 # dry run: everything is built and packed, nothing is attached to a
-# release. The macOS build runs nowhere else, so a dependency that breaks it
-# shows on its pull request, not on the tag. The version
+# release. The Windows and macOS builds run nowhere else, so a dependency
+# that breaks them shows on its pull request, not on the tag. The version
 # agreement also runs on every pull request, in tests/packaging.rs.
 on:
   push:
@@ -88,6 +88,9 @@ jobs:
           - os: ubuntu-latest
             name: linux x86_64
             targets: "x86_64-unknown-linux-gnu"
+          - os: windows-latest
+            name: windows x86_64
+            targets: "x86_64-pc-windows-msvc"
     defaults:
       run:
         shell: bash
@@ -110,6 +113,7 @@ jobs:
             rustup target add "$t"
             cargo build --release --locked --target "$t"
             exe=tplc
+            case "$t" in *windows*) exe=tplc.exe ;; esac
             tar -C "target/$t/release" -czf "tplc-$t.tar.gz" "$exe"
             sha256 "tplc-$t.tar.gz" > "tplc-$t.tar.gz.sha256"
             mkdir -p "bin/$t"
@@ -131,6 +135,7 @@ jobs:
           set -euo pipefail
           case "$RUNNER_OS" in
             macOS) bins=(bin/aarch64-apple-darwin/tplc bin/universal-apple-darwin/tplc) ;;
+            Windows) bins=(bin/x86_64-pc-windows-msvc/tplc.exe) ;;
             *) bins=(bin/x86_64-unknown-linux-gnu/tplc) ;;
           esac
           for b in "${bins[@]}"; do
@@ -179,6 +184,7 @@ jobs:
           cp packaging/mcpb/manifest.json LICENSE "$stage/"
           cp bin/universal-apple-darwin/tplc "$stage/server/tplc"
           cp bin/x86_64-unknown-linux-gnu/tplc "$stage/server/linux/tplc"
+          cp bin/x86_64-pc-windows-msvc/tplc.exe "$stage/server/tplc.exe"
           # Artifacts drop the executable bit; the .mcpb keeps what it is given.
           chmod +x "$stage/server/tplc" "$stage/server/linux/tplc"
           npx -y @anthropic-ai/mcpb@2.1.2 validate "$stage/manifest.json"
@@ -193,7 +199,7 @@ jobs:
           if-no-files-found: error
 
   # Attaches whatever was built to a draft, even when one OS failed, so a dead
-  # macOS queue still leaves the Linux tarball there. Publishes the draft only when
+  # macOS queue still leaves the Linux and Windows tarballs there. Publishes the draft only when
   # nothing expected is missing, and otherwise fails. Never runs when the versions
   # disagree.
   publish:
@@ -227,7 +233,7 @@ jobs:
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
           missing=0
-          for t in aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-gnu; do
+          for t in aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-gnu x86_64-pc-windows-msvc; do
             for f in "tplc-$t.tar.gz" "tplc-$t.tar.gz.sha256"; do
               [ -f "dist/$f" ] || { echo "::error::missing $f"; missing=1; }
             done

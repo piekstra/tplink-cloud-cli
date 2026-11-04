@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "tplc",
   "display_name": "TP-Link Kasa and Tapo (tplc)",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "See and control your own TP-Link Kasa and Tapo lights, plugs and outlets, through the open-source tplc CLI.",
   "long_description": "Ask Claude what your TP-Link devices are, whether one is on, what a plug draws, and to turn one light, plug or outlet on or off or set a light's brightness or color. Five tools: tplink_devices, tplink_device_state and tplink_energy read; tplink_power and tplink_light change one named device, and Claude asks you before each call. No tool can change a whole strip or several devices at once, control a lock, camera or other model this CLI does not know, edit a schedule or a room, or touch your account. The extension asks for no password: first install the tplc CLI and run `tplc auth login` in a terminal, which stores the session in your OS keychain. The bundled tplc reads it from there and renews it in place. When a session ends, the tools say so; run `tplc auth login` again. What the tools return goes to Claude as part of your conversation. On macOS the first call asks for keychain access, and a renewal asks to write the session back; choose Always Allow for each. A new version of the extension is a new program to the keychain and can ask again. Unofficial; not affiliated with or endorsed by TP-Link.",
   "author": {
@@ -38,6 +38,12 @@
           "args": [
             "mcp"
           ]
+        },
+        "win32": {
+          "command": "${__dirname}/server/tplc.exe",
+          "args": [
+            "mcp"
+          ]
         }
       }
     }
@@ -68,6 +74,7 @@
   "compatibility": {
     "platforms": [
       "darwin",
+      "win32",
       "linux"
     ]
   }

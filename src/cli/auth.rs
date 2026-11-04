@@ -346,15 +346,19 @@ pub fn logout(ctx: &Ctx<'_>, args: &LogoutArgs) -> Result<i32, CliError> {
     // again behind it.
     RefreshLock::forget_for_binary(crate::BIN, || ctx.sessions.clear())?;
     let mut token_left = None;
+    let mut token_removed = None;
     if args.forget {
         // Nothing records whether `mcp --new-token` ran, so this delete is ungated: a keyring that
         // is not running, or a prompt declined, must not leave the config behind it.
-        token_left = ctx.sessions.forget_connector_token().err().map(|failure| {
-            CliError::Keychain(format!(
-                "the session and config are cleared, but the connector token of `tplc mcp --http` \
-                 could not be removed, if there is one: {failure}"
-            ))
-        });
+        match ctx.sessions.forget_connector_token() {
+            Ok(removed) => token_removed = Some(removed),
+            Err(failure) => {
+                token_left = Some(CliError::Keychain(format!(
+                    "the session and config are cleared, but the connector token of `tplc mcp \
+                     --http` could not be removed, if there is one: {failure}"
+                )));
+            }
+        }
         ctx.store.clear()?;
     }
     if ctx.json {
@@ -371,11 +375,9 @@ pub fn logout(ctx: &Ctx<'_>, args: &LogoutArgs) -> Result<i32, CliError> {
         return Err(left);
     }
     if !ctx.quiet {
-        if args.forget {
-            eprintln!(
-                "logged out; any connector token removed from the keychain (a running `tplc mcp \
-                 --http` keeps its own until it stops); config cleared"
-            );
+        if let Some(removed) = token_removed {
+            eprintln!("logged out; config cleared");
+            eprintln!("{}", pk_cli_mcp::forget_note(crate::BIN, removed));
         } else {
             eprintln!("logged out");
         }
