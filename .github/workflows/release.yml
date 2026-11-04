@@ -5,9 +5,10 @@ name: release
 # Linux) is billed once per release instead of once per commit. One job per
 # OS: Linux and ONE macOS job (Apple Silicon, which cross-compiles the Intel
 # target; the macOS SDK is universal). No Windows: SECURITY.md says why. Build
-# jobs are independent (fail-fast: false) and each attaches its own tarballs,
-# so a slow or dead macOS queue never blocks the Linux assets. The `.mcpb`
-# (Claude Desktop extension) needs both, so it is packed last, on Linux.
+# jobs are independent (fail-fast: false), so a slow or dead macOS queue never
+# stops the Linux build; only `publish` attaches, and re-running the failed jobs
+# finishes the draft it leaves. The `.mcpb` (Claude Desktop extension) needs both,
+# so it is packed last, on Linux.
 #
 # Only `publish`, which runs on a tag alone and runs no third-party build
 # code, can write to the repository; building and packing (cargo, npx)
@@ -238,7 +239,12 @@ jobs:
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+        run: |
+          # A re-run of an older tag must not move Latest back to it.
+          current=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName 2>/dev/null) || echo "::warning::could not read the latest release, so this tag counts as the newest"
+          newest=$(printf '%s\n%s\n' "$current" "$GITHUB_REF_NAME" | sort -V | tail -1)
+          latest=false; [ "$newest" = "$GITHUB_REF_NAME" ] && latest=true
+          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --latest="$latest"
 
   # Keep `brew install piekstra/tap/tplc` working: point the formula at the
   # new tarballs. The tap's main takes changes only through a reviewed pull
