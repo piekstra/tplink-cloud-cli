@@ -375,14 +375,23 @@ pub fn logout(ctx: &Ctx<'_>, args: &LogoutArgs) -> Result<i32, CliError> {
         return Err(left);
     }
     if !ctx.quiet {
-        if let Some(removed) = token_removed {
-            eprintln!("logged out; config cleared");
-            eprintln!("{}", pk_cli_mcp::forget_note(crate::BIN, removed));
-        } else {
-            eprintln!("logged out");
+        for line in logout_lines(token_removed) {
+            eprintln!("{line}");
         }
     }
     Ok(0)
+}
+
+/// What a finished logout says. `token_removed` is what the keychain answered when `--forget` asked
+/// it to delete the connector token.
+fn logout_lines(token_removed: Option<bool>) -> Vec<String> {
+    match token_removed {
+        Some(removed) => vec![
+            "logged out; config cleared".into(),
+            pk_cli_mcp::forget_note(crate::BIN, removed),
+        ],
+        None => vec!["logged out".into()],
+    }
 }
 
 /// The one `auth-logout/v1` document, and the exit code that goes with it.
@@ -430,5 +439,24 @@ mod tests {
         let (report, code) = logout_report(false, None);
         assert!(report.get("connector_token_removed").is_none(), "{report}");
         assert_eq!(code, 0);
+    }
+
+    /// With no item a server can still be running on the variable, which the logout cannot see.
+    #[test]
+    fn a_forget_says_what_the_keychain_answered_and_what_a_server_still_holds() {
+        assert_eq!(logout_lines(None), ["logged out"]);
+
+        let removed = logout_lines(Some(true));
+        assert_eq!(removed[0], "logged out; config cleared");
+        assert!(
+            removed[1].contains("keeps accepting the token"),
+            "{removed:?}"
+        );
+        assert!(!removed[1].contains("held no"), "{removed:?}");
+
+        let none = logout_lines(Some(false));
+        assert_eq!(none[0], "logged out; config cleared");
+        assert!(none[1].contains("held no"), "{none:?}");
+        assert!(none[1].contains("$TPLC_MCP_TOKEN"), "{none:?}");
     }
 }
