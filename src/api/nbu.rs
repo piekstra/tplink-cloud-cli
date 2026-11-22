@@ -126,8 +126,29 @@ pub struct NbuClient {
     verbose: bool,
 }
 
+/// Whether an HTTP 403 means the token lapsed (rooms) or only that this
+/// login may not do this (a shadow read), which a refresh would not change.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum On403 {
+    TokenExpired,
+    Refused,
+}
+
 impl NbuClient {
     pub fn new(base: &str, token: &str, term_id: &str, verbose: bool) -> Result<Self, AppError> {
+        Self::new_as(base, token, term_id, verbose, APP_NAME, APP_VERSION)
+    }
+
+    /// As [`new`](Self::new), presenting another app's identity (the Kasa
+    /// app's, for devices registered there).
+    pub fn new_as(
+        base: &str,
+        token: &str,
+        term_id: &str,
+        verbose: bool,
+        app_name: &str,
+        app_version: &str,
+    ) -> Result<Self, AppError> {
         ensure_provider_url(base)?;
         let mut headers = HeaderMap::new();
         let put = |headers: &mut HeaderMap, k: &'static str, v: String| {
@@ -135,18 +156,19 @@ impl NbuClient {
                 headers.insert(k, hv);
             }
         };
-        put(&mut headers, "app-cid", format!("app:{APP_NAME}:{term_id}"));
-        put(&mut headers, "x-app-name", APP_NAME.into());
-        put(&mut headers, "x-app-version", APP_VERSION.into());
+        put(&mut headers, "app-cid", format!("app:{app_name}:{term_id}"));
+        put(&mut headers, "x-app-name", app_name.into());
+        put(&mut headers, "x-app-version", app_version.into());
         put(&mut headers, "x-term-id", term_id.into());
         put(&mut headers, "x-ospf", "Android 14".into());
         put(&mut headers, "x-net-type", "wifi".into());
         put(&mut headers, "x-strict", "0".into());
         put(&mut headers, "x-locale", "en_US".into());
-        headers.insert(
-            USER_AGENT,
-            HeaderValue::from_static("TP-Link_Tapo_Android/3.20.753(Pixel/;Android 14)"),
-        );
+        if let Ok(ua) =
+            HeaderValue::from_str(&format!("{app_name}/{app_version}(Pixel/;Android 14)"))
+        {
+            headers.insert(USER_AGENT, ua);
+        }
         let client = client_builder()?
             .default_headers(headers)
             .timeout(std::time::Duration::from_secs(30))
@@ -177,6 +199,18 @@ impl NbuClient {
         query: &[(&str, String)],
         body: Option<&Value>,
     ) -> Result<Value, AppError> {
+        self.call_with(method, path, query, body, On403::TokenExpired)
+            .await
+    }
+
+    async fn call_with(
+        &self,
+        method: Method,
+        path: &str,
+        query: &[(&str, String)],
+        body: Option<&Value>,
+        on_403: On403,
+    ) -> Result<Value, AppError> {
         let url = format!("{}{}", self.base, path);
         if self.verbose {
             eprintln!("[nbu] {method} {url}");
@@ -200,7 +234,10 @@ impl NbuClient {
         if self.verbose {
             eprintln!("HTTP {} ({} bytes)", status.as_u16(), text.len());
         }
-        if status.as_u16() == 401 || status.as_u16() == 403 {
+        if self.verbose && !status.is_success() && text.len() < 600 {
+            eprintln!("Error body: {text}");
+        }
+        if status.as_u16() == 401 || (status.as_u16() == 403 && on_403 == On403::TokenExpired) {
             return Err(AppError::TokenExpired {
                 message: format!("Tapo cloud rejected the token (HTTP {})", status.as_u16()),
                 error_code: None,
@@ -281,6 +318,46 @@ impl NbuClient {
             .into_iter()
             .filter_map(|v| serde_json::from_value(v).ok())
             .collect())
+    }
+
+    /// The state the cloud keeps for each device ("thing shadow",
+    /// `GET /v1/things/shadows?thingNames=a,b`): `{thingName, version,
+    /// state: {reported, desired}}` per device. This is how the newer apps
+    /// read `SMART.KASA*` devices, which the passthrough route reports as
+    /// offline.
+    pub async fn shadows(&self, thing_names: &[String]) -> Result<Vec<Value>, AppError> {
+        let v = self
+            .call_with(
+                Method::GET,
+                "/v1/things/shadows",
+                &[("thingNames", thing_names.join(","))],
+                None,
+                On403::Refused,
+            )
+            .await?;
+        Ok(v.get("shadows")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    /// Ask a device for a new state (`PATCH /v1/things/{name}/shadows` with
+    /// `{"state": {"desired": …}, "version": …}`); the cloud forwards it.
+    pub async fn set_desired(
+        &self,
+        thing_name: &str,
+        desired: Value,
+        version: i64,
+    ) -> Result<Value, AppError> {
+        let body = json!({"state": {"desired": desired}, "version": version});
+        self.call_with(
+            Method::PATCH,
+            &format!("/v1/things/{thing_name}/shadows"),
+            &[],
+            Some(&body),
+            On403::Refused,
+        )
+        .await
     }
 
     /// Put devices in a room (`POST /v1/families/thing-settings`); the

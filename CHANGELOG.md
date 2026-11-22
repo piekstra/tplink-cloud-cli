@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- Newer Kasa hardware, typed `SMART.KASA*` (an HS200 v5 wall switch, for one), now works. The cloud
+  passthrough answers these devices with -20571 "Device is offline" whether or not they are connected,
+  so `power on|off|toggle|status` and `devices get` read and change them through their thing shadow on
+  the NBU app-server, with the Kasa login, as the current Kasa app does. A change is read back before
+  it is reported.
+- Their names are decoded like Tapo's (the firmware base64-encodes them), so they resolve by name.
+- `devices list|search` show them online when the cloud holds their reported state, in place of the
+  passthrough's "offline". The shadow carries no connection time, so this is not a live ping.
+- The MCP tools are unchanged and still treat these devices as offline.
+
 ## 0.4.0 — 2026-11-04
 
 - Windows: releases attach `tplc-x86_64-pc-windows-msvc.tar.gz`, and the `.mcpb` runs there. A session too long for one Windows credential is split and read back as one.

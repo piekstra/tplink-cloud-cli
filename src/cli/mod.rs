@@ -14,6 +14,7 @@ pub mod light;
 pub mod power;
 pub mod rooms;
 pub mod schedule;
+pub mod smart;
 
 use std::path::PathBuf;
 
