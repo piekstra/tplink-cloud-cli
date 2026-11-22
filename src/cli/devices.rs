@@ -6,6 +6,7 @@ use pk_cli_core::CliError;
 use serde_json::json;
 
 use super::emit::Ctx;
+use super::smart;
 use crate::resolve;
 
 /// Columns of the `devices list` table (the DTO carries the rest).
@@ -39,13 +40,15 @@ pub enum DevicesCommand {
 pub async fn handle(ctx: &Ctx<'_>, cmd: &DevicesCommand) -> Result<(), CliError> {
     match cmd {
         DevicesCommand::List => {
-            let (devices, _) = resolve::fetch_all_devices(ctx).await?;
+            let (mut devices, _) = resolve::fetch_all_devices(ctx).await?;
+            smart::mark_reachable(ctx, &mut devices).await;
             let items = devices.iter().map(|d| d.row()).collect();
             emit_list(ctx.json, "device", items, COLUMNS);
             Ok(())
         }
         DevicesCommand::Search { query } => {
-            let (devices, _) = resolve::fetch_all_devices(ctx).await?;
+            let (mut devices, _) = resolve::fetch_all_devices(ctx).await?;
+            smart::mark_reachable(ctx, &mut devices).await;
             let q = query.to_lowercase();
             let items = devices
                 .iter()
@@ -56,7 +59,25 @@ pub async fn handle(ctx: &Ctx<'_>, cmd: &DevicesCommand) -> Result<(), CliError>
             Ok(())
         }
         DevicesCommand::Get { device } => {
-            let dev = resolve::resolve_device(ctx, device).await?;
+            let (devices, tokens) = resolve::fetch_all_devices(ctx).await?;
+            let found = resolve::pick(&devices, device)?;
+            if found.info.uses_shadow() {
+                let mut dto = json!({
+                    "alias": found.name(),
+                    "model": found.info.model(),
+                    "device_type": format!("{:?}", found.dtype),
+                    "category": found.dtype.category(),
+                    "cloud": found.cloud().display_name(),
+                    "device_id": found.info.id(),
+                    "is_child": false,
+                });
+                if let Some(info) = smart::sys_info(ctx, found).await? {
+                    dto["sys_info"] = info;
+                }
+                emit_one(ctx.json, "device", dto);
+                return Ok(());
+            }
+            let dev = resolve::build_device(found, &tokens, ctx.verbose)?;
             let sys_info = dev.get_sys_info().await?;
             let mut dto = json!({
                 "alias": dev.alias(),

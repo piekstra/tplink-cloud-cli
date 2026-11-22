@@ -41,7 +41,7 @@ impl DeviceInfo {
     pub fn from_cloud(value: &serde_json::Value, cloud: CloudType) -> Option<Self> {
         let mut info = Self::from_json(value)?;
         info.cloud_type = Some(cloud);
-        if cloud == CloudType::Tapo || info.is_tapo_device() {
+        if cloud == CloudType::Tapo || info.is_smart_device() {
             info.alias = info.alias.as_deref().map(decode_encoded_name);
         }
         Some(info)
@@ -53,6 +53,24 @@ impl DeviceInfo {
         self.device_type
             .as_deref()
             .is_some_and(|t| t.to_uppercase().starts_with("SMART.TAPO"))
+    }
+
+    /// Any device on TP-Link's newer SMART protocol (`SMART.TAPO*`, and
+    /// newer Kasa hardware typed `SMART.KASA*`). Their firmware encodes the
+    /// alias the same way.
+    pub fn is_smart_device(&self) -> bool {
+        self.device_type
+            .as_deref()
+            .is_some_and(|t| t.to_uppercase().starts_with("SMART."))
+    }
+
+    /// A newer Kasa device (`SMART.KASAPLUG`, `SMART.KASASWITCH`, …). The
+    /// cloud passthrough answers "Device is offline" for these, so they are
+    /// read and switched through their thing shadow instead.
+    pub fn uses_shadow(&self) -> bool {
+        self.device_type
+            .as_deref()
+            .is_some_and(|t| t.to_uppercase().starts_with("SMART.KASA"))
     }
 
     pub fn alias_or_name(&self) -> &str {
@@ -133,6 +151,16 @@ mod tests {
         let plug = DeviceInfo::from_cloud(&kasa, CloudType::Kasa).unwrap();
         assert!(!plug.is_tapo_device());
         assert_eq!(plug.alias_or_name(), "RnJvbnQgRG9vciBMb2Nr");
+        // Newer Kasa hardware (SMART.KASA*) encodes its alias like Tapo does.
+        let kasa_switch = json!({
+            "deviceId": "d5", "alias": "R2FyYWdlIExhbXA=",
+            "deviceModel": "HS200(US)", "deviceType": "SMART.KASASWITCH"
+        });
+        let switch = DeviceInfo::from_cloud(&kasa_switch, CloudType::Kasa).unwrap();
+        assert!(switch.is_smart_device() && switch.uses_shadow());
+        assert!(!switch.is_tapo_device());
+        assert_eq!(switch.alias_or_name(), "Garage Lamp");
+        assert!(!plug.uses_shadow() && !lock.uses_shadow());
         let plain = json!({"deviceId": "d4", "alias": "Porch Light"});
         assert_eq!(
             DeviceInfo::from_cloud(&plain, CloudType::Tapo)

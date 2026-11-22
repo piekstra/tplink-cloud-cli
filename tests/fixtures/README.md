@@ -9,7 +9,8 @@ embedded as a string literal. Two families of shape:
   `result.responseData` is a JSON *string* (double-encoded) holding the
   device's own `{"<service>": {"<method>": {...}}}` block.
 - **Tapo NBU app-server** (`nbu_*`): bare `{page, pageSize, total, data}`
-  pages, no envelope (see `docs/api.md`, "Rooms").
+  pages, no envelope (see `docs/api.md`, "Rooms"); `nbu_thing_shadows` is
+  the bare `{shadows: [...]}` answer of `GET /v1/things/shadows`.
 
 ## Provenance
 
@@ -23,6 +24,8 @@ embedded as a string literal. Two families of shape:
   `nbu_things`: **synthetic**, assembled from the shapes the client code and
   the decoded Tapo app expect (`docs/api.md`). Replace with a scrubbed live
   capture when one exists; keep the file names.
+- `nbu_thing_shadows`: the field set of a live answer for an HS200 v5
+  (`SMART.KASASWITCH`), 2026-11-22, with every value replaced.
 
 ## Scrubbing policy (enforced by `fixtures_carry_only_dummy_identities`)
 

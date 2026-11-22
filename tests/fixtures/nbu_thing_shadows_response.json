@@ -1,0 +1,30 @@
+{
+  "shadows": [
+    {
+      "thingName": "0000000000000000000000000000000000000007",
+      "version": 41,
+      "state": {
+        "reported": {
+          "on": true,
+          "rssi": -60,
+          "auto_off_status": "off",
+          "auto_off_remain_time": 0,
+          "smart_switch_state": false
+        }
+      }
+    },
+    {
+      "thingName": "0000000000000000000000000000000000000008",
+      "version": 12,
+      "state": {
+        "reported": {
+          "on": false,
+          "rssi": -60,
+          "auto_off_status": "off",
+          "auto_off_remain_time": 0,
+          "smart_switch_state": false
+        }
+      }
+    }
+  ]
+}

@@ -240,7 +240,8 @@ Content-Type:  application/json;charset=UTF-8      (with a body)
 
 The `ut|` prefix is literal. The same `term_id` as the v2 login is used.
 Responses are **bare JSON** (no `error_code` envelope); failures are HTTP
-statuses with `{"code", "message"}`; 401/403 → refresh the Tapo token once.
+statuses with `{"code", "message"}`; 401/403 → refresh the Tapo token once
+(except a 403 on the thing-shadow calls, below).
 TLS pinning (`*.iot.i.tplinknbu.com`) is client-side in the app; `tplc`
 uses its normal trust store plus the pinned TP-Link chain.
 
@@ -311,6 +312,36 @@ live `ghome audit`, not by reading the wire shapes.
 and `app-cid: app:Tapo:…`; the decompiled build sends
 `TP-Link_Tapo_Android`. The server accepts both; `tplc` sends the decoded
 value.
+
+## Thing shadows — newer Kasa devices (`src/cli/smart.rs`)
+
+Devices the account cloud types `SMART.KASA*` (`SMART.KASASWITCH` for an
+HS200 v5, firmware 1.0.3) answer every passthrough, on both clouds and with
+either request shape, with `-20571 Device is offline`, and `getDeviceList`
+lists them `status: 0`, while the Kasa app controls them over the internet.
+The app reads and changes them through the NBU app-server's thing shadow.
+Verified live 2026-11-22 against an HS200 v5.
+
+**The login is Kasa's.** The host comes from `getAppServiceUrl` on the
+**Kasa** regional cloud (same service id, `nbu.iot-app-server.app-v2`), and
+the headers above carry the Kasa app's identity: `Authorization: ut|<kasa
+token>`, `app-cid: app:Kasa_Android_Mix:<term_id>`, `x-app-name:
+Kasa_Android_Mix`. The same call with the Tapo login and identity is
+refused with HTTP 403 `{"error": {"code": "auth", …}}`, which a refresh
+does not change, so for these calls a 403 is not read as a lapsed token.
+
+| | method | path | body / answer |
+|---|---|---|---|
+| read | GET | `/v1/things/shadows?thingNames=<deviceId>[,<deviceId>…]` | `{"shadows": [{thingName, version, state: {reported: {on, rssi, auto_off_status, auto_off_remain_time, smart_switch_state}}}]}` |
+| change | PATCH | `/v1/things/<deviceId>/shadows` | `{"state": {"desired": {"on": true}}, "version": <read version + 1>}` → short 2xx |
+
+`tplc` reads the shadow back after a change until `reported.on` matches
+(about 6 s at most); the first read-back has matched within a second. The
+shadow has no connection timestamp, so `devices list` reports such a device
+online when its shadow carries a reported `on`, which is weaker than the
+passthrough's own status. Prior art: a Tapo P100 driven the same way, the
+passthrough also reporting it offline
+([solaredge-tplink-control](https://github.com/Aulig/solaredge-tplink-control/blob/master/tplink_helper.py)).
 
 ## Sources
 

@@ -6,6 +6,7 @@ use serde_json::Value;
 use tplc::api::errors::ERR_MFA_REQUIRED;
 use tplc::api::nbu::{Family, Thing};
 use tplc::api::response::ApiResponse;
+use tplc::cli::smart::Shadow;
 use tplc::models::device_info::DeviceInfo;
 use tplc::models::device_type::DeviceType;
 use tplc::models::energy::{CurrentPower, DayPowerSummary, MonthPowerSummary};
@@ -221,6 +222,22 @@ fn nbu_shapes_parse_and_join_on_device_id() {
     assert!(things
         .iter()
         .any(|t| kasa_ids.contains(&t.thing_name.as_str())));
+}
+
+#[test]
+fn thing_shadows_read_power_and_version() {
+    let v = fixture("nbu_thing_shadows_response.json");
+    let shadows: Vec<Shadow> = v["shadows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|raw| Shadow { raw: raw.clone() })
+        .collect();
+    assert_eq!(shadows.len(), 2);
+    assert_eq!(shadows[0].is_on(), Some(true));
+    assert_eq!(shadows[0].version(), 41);
+    assert_eq!(shadows[1].is_on(), Some(false));
+    assert!(shadows[1].reported().unwrap()["rssi"].is_number());
 }
 
 /// The scrubbing policy from `tests/fixtures/README.md`, enforced.
